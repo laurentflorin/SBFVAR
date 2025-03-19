@@ -1,0 +1,10 @@
+numpy
+scipy
+pandas
+datetime
+matplotlib
+tqdm
+plotly
+fanchart
+openpyxl
+xlsxwriter
