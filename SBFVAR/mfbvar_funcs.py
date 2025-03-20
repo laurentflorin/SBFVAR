@@ -316,7 +316,6 @@ def mdd_(hyp, YY, spec):
     
     return mdd, YYact, YYdum, XXact, XXdum
             
-
 def calc_yyact(hyp, YY, spec):
     """
     Calculate actual and dummy observations matrices for VAR estimation.
@@ -343,16 +342,8 @@ def calc_yyact(hyp, YY, spec):
     nv = int(spec[3])          # number of variables 
     nobs = int(spec[4])        # number of observations
     
-    # Make sure nobs doesn't exceed available data
-    actual_nobs = YY.shape[0] - T0
-    if actual_nobs < nobs:
-        print(f"WARNING: Requested {nobs} observations but only {actual_nobs} available. Using {actual_nobs} observations.")
-        nobs = actual_nobs
-    
     # Dummy observations - obtain mean and standard deviation from expanded pre-sample data
-    # Use min() to avoid index errors
-    T0_sample = min(T0 + 16, YY.shape[0])
-    YY0 = YY[:T0_sample, :]
+    YY0 = YY[:int(T0 + 16), :]
     ybar = np.mean(YY0, axis=0)[:, np.newaxis]
     sbar = np.std(YY0, axis=0, ddof=1)[:, np.newaxis]
     premom = np.hstack((ybar, sbar))
@@ -360,48 +351,22 @@ def calc_yyact(hyp, YY, spec):
     # Create matrices with dummy observations
     YYdum, XXdum = varprior(nv, nlags_, nex_, hyp, premom)
     
-    # Actual observations - handle potential dimension issues
-    if T0 >= YY.shape[0]:
-        raise ValueError(f"T0 ({T0}) must be less than total observations ({YY.shape[0]})")
+    # Actual observations
+    YYact = YY[T0:T0 + nobs, :]
+    XXact = np.zeros((nobs, nv * nlags_))
     
-    # Get actual observations, ensuring we don't exceed array bounds
-    max_obs = min(nobs, YY.shape[0] - T0)
-    YYact = YY[T0:T0+max_obs, :]
-    
-    # Initialize output matrix with proper dimensions
-    XXact = np.zeros((max_obs, nv*nlags_ + nex_))
-    
-    # Fill in lagged data with careful dimension checking
     for i in range(nlags_):
-        # Ensure all indices are valid
         start_idx = T0 - 1 - i
-        end_idx = T0 + max_obs - (i + 1)
+        end_idx = min(T0 + nobs - (i + 1), YY.shape[0])
         
-        if start_idx < 0 or end_idx >= YY.shape[0]:
-            print(f"WARNING: Invalid index range: [{start_idx}:{end_idx}] for YY shape {YY.shape}")
-            # Use zeros for out-of-bounds indices
-            XXact[:, i*nv:(i+1)*nv] = np.zeros((max_obs, nv))
-        else:
-            # Get the lagged data making sure shapes match
-            lagged_data = YY[start_idx:end_idx, :]
-            
-            # If shapes don't match, we need to adjust
-            if lagged_data.shape[0] != max_obs:
-                print(f"WARNING: Shape mismatch - lagged_data: {lagged_data.shape}, max_obs: {max_obs}")
-                # Pad or truncate to make shapes match
-                if lagged_data.shape[0] > max_obs:
-                    lagged_data = lagged_data[:max_obs, :]
-                else:
-                    # Create a new array with zeros and fill available data
-                    temp_data = np.zeros((max_obs, nv))
-                    temp_data[:lagged_data.shape[0], :] = lagged_data
-                    lagged_data = temp_data
-                    
-            XXact[:, i*nv:(i+1)*nv] = lagged_data
+        # Check if the slice ranges are valid
+        if start_idx < 0 or end_idx > YY.shape[0]:
+            raise ValueError(f"Invalid slice range: [{start_idx}:{end_idx}] for YY shape {YY.shape}")
+        
+        # Assign the values
+        XXact[:, i * nv:(i + 1) * nv] = YY[start_idx:end_idx, :]
     
-    # Add constant term(s)
-    if nex_ > 0:
-        XXact[:, -nex_:] = np.ones((max_obs, nex_))
+    XXact = np.hstack((XXact, np.ones((nobs, 1))))
     
     return YYact, YYdum, XXact, XXdum
 

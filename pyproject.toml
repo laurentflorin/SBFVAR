@@ -17,9 +17,7 @@ dependencies = [
 "openpyxl",
 "xlsxwriter",
 "bayesian-optimization",
-"arm-mango",
-"sphinx",
-"sphinx-autobuild" 
+"arm-mango"
 ]
 requires-python = ">= 3.8"
 authors = [

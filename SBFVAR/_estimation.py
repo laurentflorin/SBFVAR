@@ -211,50 +211,50 @@ def fit(self, mufbvar_data, hyp, var_of_interest = None, temp_agg = 'mean'):
     H_w = np.zeros((Nw, nstate))
     H_m = np.zeros((Nm, nstate))
     H_q = np.zeros((Nq, nstate))
-    
+
     # For weekly observations (direct)
     H_w[:, :Nw] = np.eye(Nw)
-    
+
     # For monthly observations (aggregated from weekly)
     if self.temp_agg == "mean":
         # Take mean of weekly obs to get monthly
-        for i in range(min(rmw, p)):
-            if i*Ntotal+Nw <= nstate:  # Check bounds
-                H_m[:, i*Ntotal:i*Ntotal+Nw] = (1/rmw) * np.zeros((Nm, Nw))
+        for i in range(rmw):
+            if i * Ntotal + Nw <= nstate:  # Check bounds
+                H_m[:, i * Ntotal : i * Ntotal + Nw] = (1 / rmw) * np.eye(Nm, Nw)
         # Direct monthly observations    
-        H_m[:, Nw:Nw+Nm] = np.eye(Nm)
+        H_m[:, Nw : Nw + Nm] = np.eye(Nm)
     else:  # sum
         # Sum weekly obs to get monthly
-        for i in range(min(rmw, p)):
-            if i*Ntotal+Nw <= nstate:  # Check bounds
-                H_m[:, i*Ntotal:i*Ntotal+Nw] = np.zeros((Nm, Nw))
+        for i in range(rmw):
+            if i * Ntotal + Nw <= nstate:  # Check bounds
+                H_m[:, i * Ntotal : i * Ntotal + Nw] = np.eye(Nm, Nw)
         # Direct monthly observations
-        H_m[:, Nw:Nw+Nm] = np.eye(Nm)
-    
+        H_m[:, Nw : Nw + Nm] = np.eye(Nm)
+
     # For quarterly observations (aggregated from weekly or monthly)
     if self.temp_agg == "mean":
         # Take mean of weekly obs to get quarterly
-        for i in range(min(rqw, p)):
-            if i*Ntotal+Nw <= nstate:  # Check bounds
-                H_q[:, i*Ntotal:i*Ntotal+Nw] = (1/rqw) * np.zeros((Nq, Nw))
+        for i in range(rqw):
+            if i * Ntotal + Nw <= nstate:  # Check bounds
+                H_q[:, i * Ntotal : i * Ntotal + Nw] = (1 / rqw) * np.eye(Nq, Nw)
         # Take mean of monthly obs to get quarterly
-        for i in range(min(rqm, p)):
-            if i*Ntotal+Nw+Nm <= nstate:  # Check bounds
-                H_q[:, i*Ntotal+Nw:i*Ntotal+Nw+Nm] = (1/rqm) * np.zeros((Nq, Nm))
+        for i in range(rqm):
+            if i * Ntotal + Nw + Nm <= nstate:  # Check bounds
+                H_q[:, i * Ntotal + Nw : i * Ntotal + Nw + Nm] = (1 / rqm) * np.eye(Nq, Nm)
         # Direct quarterly observations
-        H_q[:, Nw+Nm:Nw+Nm+Nq] = np.eye(Nq)
+        H_q[:, Nw + Nm : Nw + Nm + Nq] = np.eye(Nq)
     else:  # sum
         # Sum weekly obs to get quarterly
-        for i in range(min(rqw, p)):
-            if i*Ntotal+Nw <= nstate:  # Check bounds
-                H_q[:, i*Ntotal:i*Ntotal+Nw] = np.zeros((Nq, Nw))
+        for i in range(rqw):
+            if i * Ntotal + Nw <= nstate:  # Check bounds
+                H_q[:, i * Ntotal : i * Ntotal + Nw] = np.eye(Nq, Nw)
         # Sum monthly obs to get quarterly
-        for i in range(min(rqm, p)):
-            if i*Ntotal+Nw+Nm <= nstate:  # Check bounds
-                H_q[:, i*Ntotal+Nw:i*Ntotal+Nw+Nm] = np.zeros((Nq, Nm))
+        for i in range(rqm):
+            if i * Ntotal + Nw + Nm <= nstate:  # Check bounds
+                H_q[:, i * Ntotal + Nw : i * Ntotal + Nw + Nm] = np.eye(Nq, Nm)
         # Direct quarterly observations
-        H_q[:, Nw+Nm:Nw+Nm+Nq] = np.eye(Nq)
-    
+        H_q[:, Nw + Nm : Nw + Nm + Nq] = np.eye(Nq)
+
     # Initialize state and covariance with correct dimensions
     a_t = np.zeros(nstate)  # State vector
     P_t = np.eye(nstate)    # State covariance
@@ -329,10 +329,7 @@ def fit(self, mufbvar_data, hyp, var_of_interest = None, temp_agg = 'mean'):
             P_t = F @ P_t @ F.T + Q
             P_t = 0.5 * (P_t + P_t.T)
         
-        # Kalman Filter with robust error handling
         for t in range(nobs):
-            # Debug first iteration
-            
             try:
                 # Prediction step
                 a_pred = F @ a_t + c.flatten()  # Ensure compatible shapes
@@ -425,6 +422,8 @@ def fit(self, mufbvar_data, hyp, var_of_interest = None, temp_agg = 'mean'):
                 a_filtered[t] = a_t  # Store the entire state vector
                 P_filtered[t] = P_t
                 
+                # Debugging: Print the states after each update
+                
             except Exception as e:
                 if t == 0 and j == 0:
                     print(f"DEBUG: Error in Kalman filter at t={t}: {e}")
@@ -506,7 +505,7 @@ def fit(self, mufbvar_data, hyp, var_of_interest = None, temp_agg = 'mean'):
         YY = np.hstack((W_smooth, M_smooth, Q_smooth))
         
         # Compute actual observations for Minnesota prior
-        nobs_ = YY.shape[0]
+        nobs_ = YY.shape[0] - T0
         spec = np.hstack((p, T0, self.nex, Ntotal, nobs_))
         
         # Calculate dummy observations
@@ -839,7 +838,7 @@ def forecast(self, H, conditionals=None):
                 else:
                     # No conditionals for this period
                     YYpred[h, :] = model_forecast
-                              
+                        
             except Exception as e:
                 print(f"ERROR at h={h}: {e}")
                 print(f"XXpred[h] shape: {XXpred[h].shape}, post_phi shape: {post_phi.shape}")
