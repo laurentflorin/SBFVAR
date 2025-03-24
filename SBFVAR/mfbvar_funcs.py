@@ -336,38 +336,38 @@ def calc_yyact(hyp, YY, spec):
         Actual and dummy observation matrices
     """
     # Data Specification and setting
-    nlags_ = int(spec[0])      # number of lags   
-    T0 = int(spec[1])          # size of pre-sample 
-    nex_ = int(spec[2])        # number of exogenous vars (1 means intercept only)
-    nv = int(spec[3])          # number of variables 
-    nobs = int(spec[4])        # number of observations
-    
+    nlags_ = int(spec[0])  # number of lags
+    T0 = int(spec[1])  # size of pre-sample
+    nex_ = int(spec[2])  # number of exogenous vars (1 means intercept only)
+    nv = int(spec[3])  # number of variables
+    nobs = int(spec[4])  # number of observations
+
     # Dummy observations - obtain mean and standard deviation from expanded pre-sample data
     YY0 = YY[:int(T0 + 16), :]
     ybar = np.mean(YY0, axis=0)[:, np.newaxis]
     sbar = np.std(YY0, axis=0, ddof=1)[:, np.newaxis]
     premom = np.hstack((ybar, sbar))
-    
+
     # Create matrices with dummy observations
     YYdum, XXdum = varprior(nv, nlags_, nex_, hyp, premom)
-    
+
     # Actual observations
     YYact = YY[T0:T0 + nobs, :]
     XXact = np.zeros((nobs, nv * nlags_))
-    
+
     for i in range(nlags_):
         start_idx = T0 - 1 - i
         end_idx = min(T0 + nobs - (i + 1), YY.shape[0])
-        
+
         # Check if the slice ranges are valid
         if start_idx < 0 or end_idx > YY.shape[0]:
             raise ValueError(f"Invalid slice range: [{start_idx}:{end_idx}] for YY shape {YY.shape}")
-        
+
         # Assign the values
         XXact[:, i * nv:(i + 1) * nv] = YY[start_idx:end_idx, :]
-    
+
     XXact = np.hstack((XXact, np.ones((nobs, 1))))
-    
+
     return YYact, YYdum, XXact, XXdum
 
             

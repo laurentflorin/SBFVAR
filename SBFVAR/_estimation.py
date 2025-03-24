@@ -1,74 +1,32 @@
 import os
 import sys
-
 import numpy as np
 import math
-
 from collections import deque
 from scipy.linalg import companion
 from scipy.stats import invwishart
 import pandas as pd
 from scipy.stats import multivariate_normal
 from datetime import datetime
-from pandas.tseries.offsets import Week , MonthBegin, QuarterBegin, Day
-
+from pandas.tseries.offsets import Week, MonthBegin, QuarterBegin, Day
 import itertools
-
-#plotting
 import matplotlib.pyplot as plt
-
-#for progressbar
 from tqdm import tqdm
 from functools import partial
-tqdm = partial(tqdm, position = 0, leave=True) # this line does the magic
-
-# for plots
-
 import matplotlib.backends.backend_pdf
-
 import plotly.graph_objects as go
-
 import plotly.io as pio
-pio.renderers.default='browser'
 import plotly.express as px
-
-#to save objects
 import pickle
 import copy
-
-
-
-#from MUFBVAR.pseudo_inverse.pseudo_inverse import calculate_pseudo_inverse
 from .cholcov.cholcov_module import cholcovOrEigendecomp
 from .inverse.matrix_inversion import invert_matrix
 from .mfbvar_funcs import calc_yyact, is_explosive
-# for hyperparameter tuning
 
+tqdm = partial(tqdm, position=0, leave=True)
+pio.renderers.default = 'browser'
 
-def fit(self, mufbvar_data, hyp, var_of_interest = None, temp_agg = 'mean'):
-    
-    '''
-    Estimates the model using the model parameter specified in the initialization,
-    with a unified approach handling all three frequencies (Quarterly, Monthly, Weekly) in one step.
-    
-    Parameters
-    ----------
-    mufbvar_data : mufbvar_data class object 
-        data in the form of a mufbvar_data class object
-    hyp : list of list
-        list containing list of the hyperparameters for each frequency step\n
-        1. overall tightness\n
-        2. scaling down the variance for the coefficients of a distant lag\n
-        3. number of observations used for obtaining the prior for the covariance matrix of error terms\n
-        4. tuning parameter for coefficients for constant\n
-        5. tuning parameter for the covariance between coefficients\n
-    var_of_interest: list of names of variables that we are interested in or None
-        Only the variables that are in this list get used in every bi frequency var.
-        If None all variables get taken into each higher frequency bi frequency var.
-    temp_agg : str
-        `mean` or `sum` defines the measurement equation
-    '''
-    
+def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
     explosive_counter = 0
     valid_draws = []
     
@@ -107,162 +65,110 @@ def fit(self, mufbvar_data, hyp, var_of_interest = None, temp_agg = 'mean'):
     YM_list = copy.deepcopy(mufbvar_data.YM_list)
     input_data = copy.deepcopy(mufbvar_data.input_data)
     self.input_data = input_data
+
+
+    nburn = round((self.nburn_perc)*math.ceil(self.nsim/self.thining))
+    self.nburn = nburn
     
-    # Check for three frequencies
-    if len(frequencies) != 3:
-        raise ValueError(f"Expected 3 frequencies (Quarterly, Monthly, Weekly), got {len(frequencies)}")
+    nlags = self.nlags
     
-    # Verify the frequencies are in the expected order
-    expected_frequencies = ['Q', 'M', 'W']
-    if frequencies != expected_frequencies:
-        print(f"Warning: Expected frequencies order {expected_frequencies}, got {frequencies}")
+    # Validate frequency ratios
+    rmw = freq_ratio_list[1]  # Monthly to weekly ratio
+    rqw = freq_ratio_list[0] * rmw  # Quarterly to weekly ratio
+    assert rmw == 4, "Monthly aggregation requires exactly 4 weeks/month"
+    assert rqw == 12, "Quarterly aggregation requires exactly 12 weeks/quarter"
     
-    # Extract variable counts for each frequency
-    Nq = Nq_list[0]                 # Number of quarterly variables
-    Nm = Nm_list[0]                 # Number of monthly variables
-    Nw = Nm_list[1]                 # Number of weekly variables (second entry in Nm_list)
-    
-    # Total number of variables across all frequencies
+    # Extract variable counts
+    Nq = Nq_list[0]  # Quarterly variables
+    Nm = Nm_list[0]  # Monthly variables
+    Nw = Nm_list[1]  # Weekly variables
     Ntotal = Nq + Nm + Nw
     
     # Extract data for each frequency
     YQ = copy.deepcopy(YQ_list[0])  # Quarterly data
     YM = copy.deepcopy(YM_list[0])  # Monthly data
     YW = copy.deepcopy(YM_list[1])  # Weekly data (second entry in YM_list)
+
     
-    # Frequency ratios
-    rqm = freq_ratio_list[0]  # Quarterly to monthly ratio (3)
-    rmw = freq_ratio_list[1]  # Monthly to weekly ratio (4)
-    rqw = rqm * rmw         # Quarterly to weekly ratio (12)
-    
-    if not(var_of_interest is None):
-        idx_var_of_interest = list(filter(
-            lambda x: YQX_list[0].columns.tolist()[x] in var_of_interest,
-            range(len(YQX_list[0].columns.tolist()))))
-    
-    nburn = round((self.nburn_perc)*math.ceil(self.nsim/self.thining))
-    self.nburn = nburn
-    
-    # Check if nlags is at least as large as the largest frequency ratio
-    nlags = max(self.nlags, rqw)  # Use at least rqw lags to handle quarterly-weekly aggregation
-    if nlags < max(freq_ratio_list):
-        print(f"Warning: Increasing lags from {self.nlags} to {rqw} to accommodate quarterly-weekly aggregation")
-    
-    # Initialize parameters
-    p = int(nlags)  # Number of lags
-    T0 = int(nlags)  # Initial observations used for lags
-    
-    # Get observation counts for each frequency
-    # We'll use the highest frequency (weekly) as the base time unit
+    # Get observation counts
     Tw = YW.shape[0]  # Total weekly observations
-    Tm = YM.shape[0]  # Total monthly observations
-    Tq = YQ.shape[0]  # Total quarterly observations
+    Tm = YM.shape[0]  # Monthly observations
+    Tq = YQ.shape[0]  # Quarterly observations
     
-    # Adjust all to weekly frequency
-    nobs = Tw - T0  # Number of weekly observations after lags
+    # Number of observations after burn-in (T0 = initial lag period)
+    T0 = int(nlags)  # Initial observations used for lags
+    nobs = Tw - T0  
+    
+    # New state vector structure
+    p = max(self.nlags, rqw)  # Ensure enough lags for quarterly aggregation
+    weekly_block_size = Nw * p  # Weekly variables with p lags
+    monthly_block_size = Nw * rmw  # 4 weeks/month
+    quarterly_block_size = Nw * rqw  # 12 weeks/quarter
+    nstate = p * Ntotal
+    
+    # Validation
+    if nstate < (weekly_block_size + monthly_block_size + quarterly_block_size):
+        raise ValueError(f"State vector size {nstate} insufficient. Needs at least {weekly_block_size + monthly_block_size + quarterly_block_size}")
     
     # Initialize matrices for MCMC sampling
     Sigmap = np.zeros((math.ceil((self.nsim)/self.thining), Ntotal, Ntotal))
-    Phip = np.zeros((math.ceil((self.nsim)/self.thining), int(Ntotal)*int(p)+1, int(Ntotal)))
+    Phip = np.zeros((math.ceil((self.nsim)/self.thining), nstate + 1, Ntotal))  # +1 for constant
     Cons = np.zeros((math.ceil((self.nsim)/self.thining), Ntotal))
     
-    # Initialize the state space model
-    
-    # Define the state vector size based on needed lags
-    p = max(p, rqw)  # Ensure we have enough lags for quarterly-weekly aggregation
-    nstate = Ntotal * p  # Full state vector size
-    
-    print(f"INFO: Using {p} lags with state vector size {nstate} for {Ntotal} variables")
-    
     # Initialize Phi matrix (VAR coefficients)
-    Phi = np.vstack((0.95 * np.eye(Ntotal), np.zeros((Ntotal*(p-1)+1, Ntotal))))
+    Phi = np.vstack((0.95 * np.eye(Nw), np.zeros((weekly_block_size - Nw + 1, Nw))))
     
-    # Define the transition matrix
+    # Transition matrix F
     F = np.zeros((nstate, nstate))
-    # VAR dynamics in the first block
-    F[:Ntotal, :Ntotal*p] = Phi[:-1, :].T
-    # Shift lags
-    I = np.eye(Ntotal)
+    # Weekly VAR dynamics
+    F[:Nw, :weekly_block_size] = Phi[:Nw*p, :].T
+    # Shift weekly lags
     for i in range(p-1):
-        F[(i+1)*Ntotal:(i+2)*Ntotal, i*Ntotal:(i+1)*Ntotal] = I
+        F[Nw*(i+1):Nw*(i+2), Nw*i:Nw*(i+1)] = np.eye(Nw)
+
+    # Monthly block: Carry forward weeks within month
+    month_start = weekly_block_size
+    for i in range(rmw-1):
+        src = month_start + i*Nw
+        dest = month_start + (i+1)*Nw
+        F[dest:dest+Nw, src:src+Nw] = np.eye(Nw)
     
-    # Define constant term
+    # Quarterly block: Carry forward weeks within quarter
+    quarter_start = weekly_block_size + monthly_block_size
+    for i in range(rqw-1):
+        src = quarter_start + i*Nw
+        dest = quarter_start + (i+1)*Nw
+        F[dest:dest+Nw, src:src+Nw] = np.eye(Nw)
+    
+    #Constant
     c = np.zeros((nstate, 1))
-    c[:Ntotal] = np.atleast_2d(Phi[-1, :]).T
+    c[:Nw] = np.atleast_2d(Phi[-1, :Nw]).T  
     
-    # Define covariance matrix
-    sigma = (1e-4)*np.eye(Ntotal)
-    
-    # Partition the covariance matrix
-    sig_ww = sigma[:Nw, :Nw]                         # Weekly variance
-    sig_wm = sigma[:Nw, Nw:Nw+Nm]                    # Weekly-Monthly covariance
-    sig_wq = sigma[:Nw, Nw+Nm:]                      # Weekly-Quarterly covariance
-    sig_mm = sigma[Nw:Nw+Nm, Nw:Nw+Nm]              # Monthly variance
-    sig_mq = sigma[Nw:Nw+Nm, Nw+Nm:]                # Monthly-Quarterly covariance
-    sig_qm = sigma[Nw+Nm:, Nw:Nw+Nm]                # Quarterly-Monthly covariance
-    sig_qq = sigma[Nw+Nm:, Nw+Nm:]                  # Quarterly variance
-    
-    # Define the system covariance matrix
-    Q = np.zeros((nstate, nstate))
-    Q[:Ntotal, :Ntotal] = sigma
-    
-    # Define measurement matrix for temporal aggregation
-    # Initialize measurement matrices with correct dimensions
+    # Measurement matrices
     H_w = np.zeros((Nw, nstate))
+    H_w[:, :Nw] = np.eye(Nw)  # Direct weekly obs
+    
     H_m = np.zeros((Nm, nstate))
+    for i in range(rmw):
+        col_start = weekly_block_size + i*Nw
+        H_m[:, col_start:col_start+Nw] = (1/rmw) * np.eye(Nm, Nw)
+    
     H_q = np.zeros((Nq, nstate))
-
-    # For weekly observations (direct)
-    H_w[:, :Nw] = np.eye(Nw)
-
-    # For monthly observations (aggregated from weekly)
-    if self.temp_agg == "mean":
-        # Take mean of weekly obs to get monthly
-        for i in range(rmw):
-            if i * Ntotal + Nw <= nstate:  # Check bounds
-                H_m[:, i * Ntotal : i * Ntotal + Nw] = (1 / rmw) * np.eye(Nm, Nw)
-        # Direct monthly observations    
-        H_m[:, Nw : Nw + Nm] = np.eye(Nm)
-    else:  # sum
-        # Sum weekly obs to get monthly
-        for i in range(rmw):
-            if i * Ntotal + Nw <= nstate:  # Check bounds
-                H_m[:, i * Ntotal : i * Ntotal + Nw] = np.eye(Nm, Nw)
-        # Direct monthly observations
-        H_m[:, Nw : Nw + Nm] = np.eye(Nm)
-
-    # For quarterly observations (aggregated from weekly or monthly)
-    if self.temp_agg == "mean":
-        # Take mean of weekly obs to get quarterly
-        for i in range(rqw):
-            if i * Ntotal + Nw <= nstate:  # Check bounds
-                H_q[:, i * Ntotal : i * Ntotal + Nw] = (1 / rqw) * np.eye(Nq, Nw)
-        # Take mean of monthly obs to get quarterly
-        for i in range(rqm):
-            if i * Ntotal + Nw + Nm <= nstate:  # Check bounds
-                H_q[:, i * Ntotal + Nw : i * Ntotal + Nw + Nm] = (1 / rqm) * np.eye(Nq, Nm)
-        # Direct quarterly observations
-        H_q[:, Nw + Nm : Nw + Nm + Nq] = np.eye(Nq)
-    else:  # sum
-        # Sum weekly obs to get quarterly
-        for i in range(rqw):
-            if i * Ntotal + Nw <= nstate:  # Check bounds
-                H_q[:, i * Ntotal : i * Ntotal + Nw] = np.eye(Nq, Nw)
-        # Sum monthly obs to get quarterly
-        for i in range(rqm):
-            if i * Ntotal + Nw + Nm <= nstate:  # Check bounds
-                H_q[:, i * Ntotal + Nw : i * Ntotal + Nw + Nm] = np.eye(Nq, Nm)
-        # Direct quarterly observations
-        H_q[:, Nw + Nm : Nw + Nm + Nq] = np.eye(Nq)
+    for i in range(rqw):
+        col_start = weekly_block_size + monthly_block_size + i*Nw
+        H_q[:, col_start:col_start+Nw] = (1/rqw) * np.eye(Nq, Nw)
 
     # Initialize state and covariance with correct dimensions
-    a_t = np.zeros(nstate)  # State vector
-    P_t = np.eye(nstate)    # State covariance
+    Q = np.zeros((nstate, nstate))
+    Q[:Nw, :Nw] = 1e-4 * np.eye(Nw)  # Weekly noise
+    a_t = np.zeros(nstate)
+    P_t = np.eye(nstate)
     
     # Initialize stability by iterating a few times
     for _ in range(5):
         P_t = F @ P_t @ F.T + Q
         P_t = 0.5 * (P_t + P_t.T)  # Ensure symmetry
+    
     
     # For storing filtered and smoothed states - with correct dimensions
     a_filtered = np.zeros((nobs, nstate))  # Use full state size
@@ -320,15 +226,16 @@ def fit(self, mufbvar_data, hyp, var_of_interest = None, temp_agg = 'mean'):
     
     # Main sampling loop
     for j in tqdm(range(self.nsim)):
+
         # Re-initialize state and covariance for each iteration
         a_t = np.zeros(nstate)
         P_t = np.eye(nstate)
         
-        # Re-stabilize covariance
         for _ in range(5):
             P_t = F @ P_t @ F.T + Q
             P_t = 0.5 * (P_t + P_t.T)
-        
+            
+        # Kalman filter loop
         for t in range(nobs):
             try:
                 # Prediction step
@@ -361,30 +268,18 @@ def fit(self, mufbvar_data, hyp, var_of_interest = None, temp_agg = 'mean'):
                             print(f"DEBUG: Error processing weekly data at w_idx={w_idx}: {e}")
                 
                 # Check for monthly observations with bounds checking
-                if (w_idx < len(m_obs_available) and m_obs_available[w_idx] and 
-                    w_idx < len(YM_weekly) and not np.all(np.isnan(YM_weekly[w_idx]))):
-                    try:
-                        m_data = np.asarray(YM_weekly[w_idx], dtype=float)
-                        if len(m_data) == Nm:
-                            valid_meas_available.append("m")
-                            H_matrices.append(H_m)
-                            y_obs.append(m_data)
-                    except (IndexError, ValueError) as e:
-                        if t == 0 and j == 0:
-                            print(f"DEBUG: Error processing monthly data at w_idx={w_idx}: {e}")
+                if (w_idx+1) % rmw == 0:  # End of month
+                    m_idx = (w_idx+1) // rmw - 1
+                    if m_idx < YM.shape[0]:
+                        H_matrices.append(H_m)
+                        y_obs.append(YM[m_idx])
                 
                 # Check for quarterly observations with bounds checking
-                if (w_idx < len(q_obs_available) and q_obs_available[w_idx] and 
-                    w_idx < len(YQ_weekly) and not np.all(np.isnan(YQ_weekly[w_idx]))):
-                    try:
-                        q_data = np.asarray(YQ_weekly[w_idx], dtype=float)
-                        if len(q_data) == Nq:
-                            valid_meas_available.append("q")
-                            H_matrices.append(H_q)
-                            y_obs.append(q_data)
-                    except (IndexError, ValueError) as e:
-                        if t == 0 and j == 0:
-                            print(f"DEBUG: Error processing quarterly data at w_idx={w_idx}: {e}")
+                if (w_idx+1) % rqw == 0:  # End of quarter
+                    q_idx = (w_idx+1) // rqw - 1
+                    if q_idx < YQ.shape[0]:
+                        H_matrices.append(H_q)
+                        y_obs.append(YQ[q_idx])
                 
                 # If we have valid measurements, proceed with Kalman update
                 if valid_meas_available and H_matrices and y_obs:
@@ -586,8 +481,8 @@ def fit(self, mufbvar_data, hyp, var_of_interest = None, temp_agg = 'mean'):
             Q[:Ntotal, :Ntotal] = sigma
         
         except Exception as e:
-            if j == 0:
-                print(f"DEBUG: Error in VAR posterior sampling: {e}")
+            
+            print(f"DEBUG: Error in VAR posterior sampling: {e}")
             # If VAR estimation fails, continue with next iteration
             continue
     
