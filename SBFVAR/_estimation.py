@@ -120,21 +120,28 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
     
     # Transition matrix F
     F = np.zeros((nstate, nstate))
+
     # Weekly VAR dynamics
     F[:Nw, :weekly_block_size] = Phi[:Nw*p, :].T
     # Shift weekly lags
     for i in range(p-1):
         F[Nw*(i+1):Nw*(i+2), Nw*i:Nw*(i+1)] = np.eye(Nw)
 
-    # Monthly block: Carry forward weeks within month
+    # Monthly block: Update from weekly states
     month_start = weekly_block_size
+    # First position gets current weekly state
+    F[month_start:month_start+Nw, :Nw] = np.eye(Nw)
+    # Rest of positions shift forward
     for i in range(rmw-1):
         src = month_start + i*Nw
         dest = month_start + (i+1)*Nw
         F[dest:dest+Nw, src:src+Nw] = np.eye(Nw)
-    
-    # Quarterly block: Carry forward weeks within quarter
+
+    # Quarterly block: Update from weekly states
     quarter_start = weekly_block_size + monthly_block_size
+    # First position gets current weekly state
+    F[quarter_start:quarter_start+Nw, :Nw] = np.eye(Nw)
+    # Rest of positions shift forward
     for i in range(rqw-1):
         src = quarter_start + i*Nw
         dest = quarter_start + (i+1)*Nw
@@ -147,16 +154,33 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
     # Measurement matrices
     H_w = np.zeros((Nw, nstate))
     H_w[:, :Nw] = np.eye(Nw)  # Direct weekly obs
-    
+
     H_m = np.zeros((Nm, nstate))
     for i in range(rmw):
         col_start = weekly_block_size + i*Nw
-        H_m[:, col_start:col_start+Nw] = (1/rmw) * np.eye(Nm, Nw)
-    
+        if Nm == Nw:
+            H_m[:, col_start:col_start+Nw] = (1/rmw) * np.eye(Nw)
+        else:
+            # Handle case where Nm != Nw - create mapping matrix
+            mapping = np.zeros((Nm, Nw))
+            # Define your mapping logic here based on which weekly vars correspond to monthly
+            # For example, if each monthly var corresponds to specific weekly var:
+            for j in range(min(Nm, Nw)):
+                mapping[j, j] = 1
+            H_m[:, col_start:col_start+Nw] = (1/rmw) * mapping
+
     H_q = np.zeros((Nq, nstate))
     for i in range(rqw):
         col_start = weekly_block_size + monthly_block_size + i*Nw
-        H_q[:, col_start:col_start+Nw] = (1/rqw) * np.eye(Nq, Nw)
+        if Nq == Nw:
+            H_q[:, col_start:col_start+Nw] = (1/rqw) * np.eye(Nw)
+        else:
+            # Handle case where Nq != Nw - create mapping matrix
+            mapping = np.zeros((Nq, Nw))
+            # Define your mapping logic here based on which weekly vars correspond to quarterly
+            for j in range(min(Nq, Nw)):
+                mapping[j, j] = 1
+            H_q[:, col_start:col_start+Nw] = (1/rqw) * mapping
 
     # Initialize state and covariance with correct dimensions
     Q = np.zeros((nstate, nstate))
@@ -225,114 +249,95 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
     print("Total Number of Draws: ", self.nsim)
     
     # Main sampling loop
+    # Main sampling loop
+    # Main sampling loop
     for j in tqdm(range(self.nsim)):
 
-        # Re-initialize state and covariance for each iteration
-        a_t = np.zeros(nstate)
-        P_t = np.eye(nstate)
-        
-        for _ in range(5):
-            P_t = F @ P_t @ F.T + Q
-            P_t = 0.5 * (P_t + P_t.T)
+        # If it's the first iteration, initialize state and covariance
+        if j > 0:
+            a_t = a_draws[j-1, -1]
+            P_t = P_filtered[-1]
             
         # Kalman filter loop
         for t in range(nobs):
-            try:
-                # Prediction step
-                a_pred = F @ a_t + c.flatten()  # Ensure compatible shapes
-                P_pred = F @ P_t @ F.T + Q
+            # Prediction step
+            a_pred = F @ a_t + c.flatten()  # Ensure compatible shapes
+            P_pred = F @ P_t @ F.T + Q
+            
+            # Ensure symmetry
+            P_pred = 0.5 * (P_pred + P_pred.T)
+            
+            # Determine which measurements are available
+            w_idx = T0 + t  # Weekly index
+            m_idx = w_idx // rmw  # Monthly index
+            q_idx = w_idx // rqw  # Quarterly index
+            
+            # Initialize valid measurement tracking
+            valid_meas_available = []
+            H_matrices = []
+            y_obs = []
+            
+            # Check for weekly observations with bounds checking
+            if w_idx < Tw and w_idx < len(YW) and not np.all(np.isnan(YW[w_idx])):
+                try:
+                    w_data = np.asarray(YW[w_idx], dtype=float)
+                    if len(w_data) == Nw:
+                        valid_meas_available.append("w")
+                        H_matrices.append(H_w)
+                        y_obs.append(w_data)
+                except (IndexError, ValueError) as e:
+                    if t == 0 and j == 0:
+                        print(f"DEBUG: Error processing weekly data at w_idx={w_idx}: {e}")
+            
+            # Check for monthly observations with bounds checking
+            if (w_idx+1) % rmw == 0:  # End of month
+                m_idx = (w_idx+1) // rmw - 1
+                if m_idx < YM.shape[0]:
+                    H_matrices.append(H_m)
+                    y_obs.append(YM[m_idx])
+            
+            # Check for quarterly observations with bounds checking
+            if (w_idx+1) % rqw == 0:  # End of quarter
+                q_idx = (w_idx+1) // rqw - 1
+                if q_idx < YQ.shape[0]:
+                    H_matrices.append(H_q)
+                    y_obs.append(YQ[q_idx])
+            
+            # If we have valid measurements, proceed with Kalman update
+            if valid_meas_available and H_matrices and y_obs:
+                # Stack measurement matrices and observations
+                H = np.vstack(H_matrices)
+                y = np.concatenate(y_obs)
                 
-                # Ensure symmetry
-                P_pred = 0.5 * (P_pred + P_pred.T)
+                # Measurement noise covariance
+                R = 1e-8 * np.eye(len(y))  # Small noise for numerical stability
                 
-                # Determine which measurements are available
-                w_idx = T0 + t  # Weekly index
-                m_idx = w_idx // rmw  # Monthly index
-                q_idx = w_idx // rqw  # Quarterly index
+                # Update step
+                y_hat = H @ a_pred
+                nu = y - y_hat  # Innovation
                 
-                # Initialize valid measurement tracking
-                valid_meas_available = []
-                H_matrices = []
-                y_obs = []
+                S = H @ P_pred @ H.T + R
+                S = 0.5 * (S + S.T)  # Ensure symmetry
                 
-                # Check for weekly observations with bounds checking
-                if w_idx < Tw and w_idx < len(YW) and not np.all(np.isnan(YW[w_idx])):
-                    try:
-                        w_data = np.asarray(YW[w_idx], dtype=float)
-                        if len(w_data) == Nw:
-                            valid_meas_available.append("w")
-                            H_matrices.append(H_w)
-                            y_obs.append(w_data)
-                    except (IndexError, ValueError) as e:
-                        if t == 0 and j == 0:
-                            print(f"DEBUG: Error processing weekly data at w_idx={w_idx}: {e}")
-                
-                # Check for monthly observations with bounds checking
-                if (w_idx+1) % rmw == 0:  # End of month
-                    m_idx = (w_idx+1) // rmw - 1
-                    if m_idx < YM.shape[0]:
-                        H_matrices.append(H_m)
-                        y_obs.append(YM[m_idx])
-                
-                # Check for quarterly observations with bounds checking
-                if (w_idx+1) % rqw == 0:  # End of quarter
-                    q_idx = (w_idx+1) // rqw - 1
-                    if q_idx < YQ.shape[0]:
-                        H_matrices.append(H_q)
-                        y_obs.append(YQ[q_idx])
-                
-                # If we have valid measurements, proceed with Kalman update
-                if valid_meas_available and H_matrices and y_obs:
-                    # Stack measurement matrices and observations
-                    H = np.vstack(H_matrices)
-                    y = np.concatenate(y_obs)
-                    
-                    # Measurement noise covariance
-                    R = 1e-8 * np.eye(len(y))  # Small noise for numerical stability
-                    
-                    # Update step
-                    y_hat = H @ a_pred
-                    nu = y - y_hat  # Innovation
-                    
-                    S = H @ P_pred @ H.T + R
-                    S = 0.5 * (S + S.T)  # Ensure symmetry
-                    
-                    try:
-                        K = P_pred @ H.T @ invert_matrix(S)  # Kalman gain
-                        a_t = a_pred + K @ nu
-                        P_t = P_pred - K @ H @ P_pred
-                        # Ensure symmetry
-                        P_t = 0.5 * (P_t + P_t.T)
-                    except np.linalg.LinAlgError as e:
-                        if t == 0 and j == 0:
-                            print(f"DEBUG: Matrix inversion failed: {e} - using prediction only")
-                        a_t = a_pred
-                        P_t = P_pred
-                else:
-                    # No valid observations - just use prediction
+                try:
+                    K = P_pred @ H.T @ invert_matrix(S)  # Kalman gain
+                    a_t = a_pred + K @ nu
+                    P_t = P_pred - K @ H @ P_pred
+                    # Ensure symmetry
+                    P_t = 0.5 * (P_t + P_t.T)
+                except np.linalg.LinAlgError as e:
+                    if t == 0 and j == 0:
+                        print(f"DEBUG: Matrix inversion failed: {e} - using prediction only")
                     a_t = a_pred
                     P_t = P_pred
-                
-                # Store filtered state - ensure dimensions match
-                a_filtered[t] = a_t  # Store the entire state vector
-                P_filtered[t] = P_t
-                
-                # Debugging: Print the states after each update
-                
-            except Exception as e:
-                if t == 0 and j == 0:
-                    print(f"DEBUG: Error in Kalman filter at t={t}: {e}")
-                    print(f"DEBUG: a_t shape={a_t.shape}, a_filtered[t] shape={a_filtered[t].shape}")
-                # Use previous state or zeros as fallback
-                if t > 0:
-                    a_filtered[t] = a_filtered[t-1]
-                    P_filtered[t] = P_filtered[t-1]
-                else:
-                    a_filtered[t] = np.zeros(nstate)
-                    P_filtered[t] = np.eye(nstate)
-                # Continue with next iteration
-                a_t = a_filtered[t]
-                P_t = P_filtered[t]
+            else:
+                # No valid observations - just use prediction
+                a_t = a_pred
+                P_t = P_pred
+            
+            # Store filtered state - ensure dimensions match
+            a_filtered[t] = a_t  # Store the entire state vector
+            P_filtered[t] = P_t
         
         # Kalman Smoother
         a_smooth = np.zeros((nobs, nstate))
@@ -467,6 +472,22 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
             # Update the transition matrix and system parameters for the next iteration
             F[:Ntotal, :Ntotal*p] = Phi[:-1, :].T
             c[:Ntotal] = np.atleast_2d(Phi[-1, :]).T
+
+            # Ensure correct structure for aggregation blocks
+            month_start = weekly_block_size
+            for i in range(rmw-1):
+                src = month_start + i*Nw
+                dest = month_start + (i+1)*Nw
+                F[dest:dest+Nw, src:src+Nw] = np.eye(Nw)
+
+            quarter_start = weekly_block_size + monthly_block_size
+            for i in range(rqw-1):
+                src = quarter_start + i*Nw
+                dest = quarter_start + (i+1)*Nw
+                F[dest:dest+Nw, src:src+Nw] = np.eye(Nw)
+
+            F[month_start:month_start+Nw, :Nw] = np.eye(Nw)
+            F[quarter_start:quarter_start+Nw, :Nw] = np.eye(Nw)
             
             # Update covariance partitions
             sig_ww = sigma[:Nw, :Nw]
@@ -481,11 +502,10 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
             Q[:Ntotal, :Ntotal] = sigma
         
         except Exception as e:
-            
             print(f"DEBUG: Error in VAR posterior sampling: {e}")
             # If VAR estimation fails, continue with next iteration
             continue
-    
+
     # Save results to self
     self.Phip = Phip
     self.Sigmap = Sigmap
@@ -500,18 +520,23 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
     self.XXactsim_list = XXactsim_list
     self.explosive_counter = explosive_counter
     self.valid_draws = [draw for draw in valid_draws if draw >= self.nburn/self.thining]
-    
+
     # Store the smoothed states for later use
     self.a_draws = a_draws  # Full state history [n_draws, nobs, nstate]
-    
+
     # Store original data for reference
     self.input_data_W = YW
     self.input_data_M = YM
     self.input_data_Q = YQ
-    
+
     # Store indexes
     self.index_list = index_list
-    
+
+    return None
+
+    # Store indexes
+    self.index_list = index_list
+
     return None
         
 def forecast(self, H, conditionals=None):
