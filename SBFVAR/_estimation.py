@@ -182,7 +182,7 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
         for w in range(rmw):
             if self.temp_agg == 'mean':
                 H_m[m, monthly_start + w*Nm + m] = 1.0/rmw  # Average of 4 weeks
-            else:
+            else:  # 'sum'
                 H_m[m, monthly_start + w*Nm + m] = 1.0  # Sum of 4 weeks
     
     # 3. Measurement matrix for quarterly variables (temporal aggregation)
@@ -194,7 +194,7 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
         for w in range(rqw):
             if self.temp_agg == 'mean':
                 H_q[q, quarterly_start + w*Nq + q] = 1.0/rqw  # Average of 12 weeks
-            else:
+            else:  # 'sum'
                 H_q[q, quarterly_start + w*Nq + q] = 1.0  # Sum of 12 weeks
     
     # Initialize state and covariance matrices
@@ -292,44 +292,16 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
             if (w_idx+1) % rmw == 0:  # End of month
                 m_idx = (w_idx+1) // rmw - 1
                 if m_idx < YM.shape[0]:
-                    # Create a measurement matrix that enforces the temporal aggregation constraint
-                    H_m_constraint = np.zeros((Nm, nstate))
-                    for m in range(Nm):
-                        for w in range(rmw):
-                            if self.temp_agg == 'mean':
-                                H_m_constraint[m, monthly_start + w*Nm + m] = 1.0/rmw  # Average
-                            else:
-                                H_m_constraint[m, monthly_start + w*Nm + m] = 1.0  # Sum
-                    H_matrices.append(H_m_constraint)
+                    H_matrices.append(H_m)
                     y_obs.append(YM[m_idx])
-                    R = np.zeros((len(y_obs[-1]), len(y_obs[-1])))
-                    R[-Nm:, -Nm:] = 1e-10 * np.eye(Nm)
-                    if len(y_obs[-1]) > Nm:
-                        R[:-Nm, :-Nm] = 1e-8 * np.eye(len(y_obs[-1]) - Nm)
             
             # Check for quarterly observations - only available at the end of quarter
             if (w_idx+1) % rqw == 0:  # End of quarter
                 q_idx = (w_idx+1) // rqw - 1
                 if q_idx < YQ.shape[0]:
-                    # Create a measurement matrix that enforces the temporal aggregation constraint
-                    H_q_constraint = np.zeros((Nq, nstate))
-                    for q in range(Nq):
-                        for w in range(rqw):
-                            if self.temp_agg == 'mean':
-                                H_q_constraint[q, quarterly_start + w*Nq + q] = 1.0/rqw  # Average
-                            else:
-                                H_q_constraint[q, quarterly_start + w*Nq + q] = 1.0  # Sum
-                    H_matrices.append(H_q_constraint)
+                    H_matrices.append(H_q)
                     y_obs.append(YQ[q_idx])
-                    if len(H_matrices) > 1:
-                        R = np.zeros((len(y_obs[-1]), len(y_obs[-1])))
-                        R[-Nq:, -Nq:] = 1e-12 * np.eye(Nq)
-                        if len(y_obs[-1]) > Nq:
-                            if len(y_obs[-1]) == Nq + Nm:
-                                R[:-Nq, :-Nq] = 1e-10 * np.eye(Nm)
-                            else:
-                                R[:-Nq, :-Nq] = 1e-8 * np.eye(len(y_obs[-1]) - Nq)
-
+            
             # If we have valid measurements, proceed with Kalman update
             if H_matrices and y_obs:
                 # Stack measurement matrices and observations
@@ -357,6 +329,10 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
                         print(f"DEBUG: Matrix inversion failed: {e} - using prediction only")
                     a_t = a_pred
                     P_t = P_pred
+            else:
+                # No valid observations - just use prediction
+                a_t = a_pred
+                P_t = P_pred
             
             # Store filtered state
             a_filtered[t] = a_t
@@ -589,7 +565,6 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
     self.index_list = index_list
 
     return None
-
 
 
 
