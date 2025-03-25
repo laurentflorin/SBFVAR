@@ -121,3 +121,39 @@ multifrquency_var_models = [model_2001_Q3]
 model.compare_models(multifrquency_var_models, model_names, agg = True, variables = "all", save = False, name = "Comparison", show = True, nhist = 5)
 
 model.compare_models(multifrquency_var_models, model_names, agg = False, variables = ["q_1"], save = False, name = "Comparison", show = True, nhist = 20)
+
+import pandas as pd
+
+# Load the test output and historical data
+test_df = pd.read_csv('examples/test.csv', delimiter=';', index_col=0)
+hist_m_df = pd.read_csv('examples/hist_m.csv', delimiter=';', index_col=0)
+hist_q_df = pd.read_csv('examples/hist_q.csv', delimiter=';', index_col=0)
+
+# Function to calculate monthly averages from weekly data
+def calculate_monthly_averages(test_df, hist_m_df):
+    monthly_avg = test_df.groupby(test_df.index.to_period('M')).mean()
+    comparison = pd.concat([monthly_avg[['m_1', 'm_2', 'm_3']], hist_m_df], axis=1)
+    comparison.columns = ['m_1_avg', 'm_2_avg', 'm_3_avg', 'm_1_hist', 'm_2_hist', 'm_3_hist']
+    comparison['m_1_diff'] = comparison['m_1_avg'] - comparison['m_1_hist']
+    comparison['m_2_diff'] = comparison['m_2_avg'] - comparison['m_2_hist']
+    comparison['m_3_diff'] = comparison['m_3_avg'] - comparison['m_3_hist']
+    return comparison
+
+# Function to calculate quarterly averages from weekly data
+def calculate_quarterly_averages(test_df, hist_q_df):
+    quarterly_avg = test_df.groupby(test_df.index.to_period('Q')).mean()
+    comparison = pd.concat([quarterly_avg[['q_1', 'q_2']], hist_q_df], axis=1)
+    comparison.columns = ['q_1_avg', 'q_2_avg', 'q_1_hist', 'q_2_hist']
+    comparison['q_1_diff'] = comparison['q_1_avg'] - comparison['q_1_hist']
+    comparison['q_2_diff'] = comparison['q_2_avg'] - comparison['q_2_hist']
+    return comparison
+
+# Perform the calculations and output the comparisons
+monthly_comparison = calculate_monthly_averages(test_df, hist_m_df)
+quarterly_comparison = calculate_quarterly_averages(test_df, hist_q_df)
+
+print("Monthly Aggregation Comparison:")
+print(monthly_comparison)
+
+print("Quarterly Aggregation Comparison:")
+print(quarterly_comparison)
