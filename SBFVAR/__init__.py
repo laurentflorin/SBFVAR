@@ -35,7 +35,7 @@ class multifrequency_var:
         self.thining = thining
         
     # Imported methods
-    from ._estimation import fit, forecast, aggregate
+    from ._estimation import fit, forecast, aggregate, replace_forecasts_with_history, prepare_history_df, replace_with_history, aggregate_df, filter_to_variables_of_interest, block_diag, extract_historical_data 
     from ._save import to_excel, save
 
     
@@ -59,10 +59,7 @@ class mufbvar_data:
     
     def __init__(self, data, trans, frequencies):
         
-        
-        
         # Creating lists of highfrequency data
-        
         YMX_list = deque()
         YM0_list = deque()
         select_m_list = deque()
@@ -71,7 +68,7 @@ class mufbvar_data:
         exc_list = deque()
         index_list = deque()
         
-        
+        # Process data for each frequency (except the lowest)
         for i in range(1, len(frequencies)):
             YMX_list.append(data[i])
             YM0_list.append(data[i].to_numpy())
@@ -80,19 +77,16 @@ class mufbvar_data:
             YMh_list.append(data[i].to_numpy())
             index_list.append(data[i].index)
         
+        # Ensure the index is a DatetimeIndex
         if not isinstance(index_list[-1], pd.DatetimeIndex):
             try:
                 index_list[-1] = pd.to_datetime(index_list[-1])
             except:
                 print("Index must be of the form 'YYYY-MM-DD'")
         
-        
         input_data = copy.deepcopy(YMX_list)
         
-        # Creating list of low frequency data
-        # Here only the first entry with the lowest frequency data is generated
-        # The other entries are generated during the estimation
-        
+        # Creating list of low frequency data (quarterly)
         YQX_list = deque()
         YQ0_list = deque()
         select_q = deque()
@@ -102,19 +96,22 @@ class mufbvar_data:
         select_q.append(trans[0])
         vars_q = YQX_list[0].columns[:]
         
-        input_data_Q =  copy.deepcopy(YQX_list[0])
+        input_data_Q = copy.deepcopy(YQX_list[0])
         
-        
+        # Lists for combined variable information
         varlist_list = deque()
         select_list = deque()
         select_c_list = deque()
         
+        # Lists for variable counts
         Nm_list = deque()
         nv_list = deque()
         Nq_list = deque()
         
+        # Initialize quarterly variable count
         Nq_list.append(YQX_list[0].shape[1])
         
+        # Create selection vectors for intermediate frequencies
         for i in range(len(YMX_list)-1):
             Nq_list.append(YQX_list[0].shape[1] + YMX_list[i].shape[1]) 
             if len(select_m_list[i]) == 0:
@@ -122,69 +119,66 @@ class mufbvar_data:
             else:
                 select_q.append(np.hstack((select_m_list[i], select_q[0])))
         
-        # FIX: Improve variable list creation to properly include all frequencies
+        # IMPROVED: Variable list construction that properly handles multiple frequencies
         for i in range(len(YMX_list)):
-            if i > 0:
-                # For weekly level (i=1), combine weekly + monthly + quarterly variables
-                # Collect all higher frequency variable lists up to current level
-                new_list = [item for item in list(itertools.islice(select_m_list, 0, i+1)) if len(item) > 0]
-                select_list.append(np.hstack((np.hstack(list(reversed(new_list))), select_q[0])))
-                
-                # Collect all variable names from higher frequencies (weekly, monthly)
-                rev_vars_m = list(itertools.islice(vars_m_list, 0, i+1))
-                rev_vars_m.reverse()
-                
-                # Create combined variable list: weekly + monthly + quarterly
-                try:
-                    combined_vars = np.hstack(rev_vars_m)
-                    # Ensure it's a flat array
-                    if isinstance(combined_vars, np.ndarray) and combined_vars.ndim > 1:
-                        combined_vars = np.squeeze(combined_vars)
-                    varlist_list.append(np.hstack((combined_vars, vars_q)))
-                except ValueError as e:
-                    print(f"WARNING: Error combining variable lists: {e}")
-                    # Fallback to manually concatenating variable names
-                    flat_vars = []
-                    for var_list in rev_vars_m:
-                        flat_vars.extend(var_list)
-                    flat_vars.extend(vars_q)
-                    varlist_list.append(np.array(flat_vars))
-                    
-            else:
-                # For monthly level (i=0), combine monthly + quarterly variables
-                if select_m_list[i].size:
-                    select_list.append(np.hstack((select_m_list[i], select_q[0])))
-                    varlist_list.append(np.hstack((vars_m_list[i], vars_q)))
-                else:
-                    select_list.append(select_q[0])
-                    if hasattr(vars_q, 'shape') and len(vars_q.shape) > 1:
-                        varlist_list.append(np.squeeze(vars_q))
-                    else:
-                        varlist_list.append(vars_q)
+            # Initialize lists to collect transformations and variable names
+            all_higher_freq_selects = []
+            all_higher_freq_vars = []
             
+            # Collect all higher frequency information up to current frequency level
+            for j in range(i+1):
+                if select_m_list[j].size:
+                    all_higher_freq_selects.append(select_m_list[j])
+                    all_higher_freq_vars.append(vars_m_list[j])
+            
+            # Combine all selections and variable names in the right order
+            if all_higher_freq_selects:
+                # Combine transformation selections
+                combined_selects = np.hstack(list(reversed(all_higher_freq_selects)))
+                select_list.append(np.hstack((combined_selects, select_q[0])))
+                
+                # Ensure variable lists are properly flattened before combining
+                flat_vars = []
+                for var_list in reversed(all_higher_freq_vars):
+                    if isinstance(var_list, np.ndarray):
+                        flat_vars.extend(var_list.flatten())
+                    else:
+                        flat_vars.extend(var_list)
+                
+                # Create combined variable list
+                varlist_list.append(np.hstack((np.array(flat_vars), vars_q)))
+            else:
+                select_list.append(select_q[0])
+                if hasattr(vars_q, 'shape') and len(vars_q.shape) > 1:
+                    varlist_list.append(np.squeeze(vars_q))
+                else:
+                    varlist_list.append(vars_q)
+            
+            # Update dimension counters
             Nm_list.append(int(np.shape(YM0_list[i])[1]))
             nv_list.append(int(Nm_list[i] + Nq_list[i]))
         
-        # Print debug info to verify the variable lists
+        # Display debug information to verify variable lists
         print(f"DEBUG INFO - Variable counts by frequency:")
-        print(f"  Quarterly variables: {YQX_list[0].shape[1]}")
+        print(f"  {frequencies[0]} variables: {YQX_list[0].shape[1]}")
         for i, freq in enumerate(frequencies[1:]):
             if i < len(YMX_list):
                 print(f"  {freq} variables: {YMX_list[i].shape[1]}")
         
         print(f"DEBUG INFO - Combined variable lists:")
         for i, varlist in enumerate(varlist_list):
-            print(f"  varlist_list[{i}]: {len(varlist)} variables - {varlist}")
+            print(f"  varlist_list[{i}]: {len(varlist)} variables")
+            if len(varlist) < 20:  # Only print if list isn't too long
+                print(f"    {varlist}")
         
+        # Store separate selection lists
         select_list_sep = list(select_q)
         select_list_sep.extend(select_m_list)
         
-        
-        # Calculate the frequency ratios
-        
+        # Calculate frequency ratios
         freq_ratio_list = deque()
         
-        for freq in range(1,len(frequencies)):
+        for freq in range(1, len(frequencies)):
             freq_lf = frequencies[freq-1]
             freq_hf = frequencies[freq]
             if freq_hf == "Q" and freq_lf == "Y":
@@ -203,30 +197,28 @@ class mufbvar_data:
                 freq_ratio = 4
             elif freq_hf == "D" and freq_lf == "W":
                 freq_ratio = 5
-                
+            elif freq_hf == "D" and freq_lf == "M":
+                freq_ratio = 20
             else:
-                print("Higher frequency: ", freq_hf, " Lower Frequency: ", freq_lf, end ='\n')
-                freq_ratio = input("Please enter frequency ratio")
+                print("Higher frequency: ", freq_hf, " Lower Frequency: ", freq_lf, end='\n')
+                freq_ratio = int(input("Please enter frequency ratio: "))
             
             freq_ratio_list.append(freq_ratio)
         
-        
-        #performe data transformations
-        
+        # Perform data transformations
         for i in range(len(YM0_list)):
             if select_m_list[i].size:
-                YM0_list[i][:,(select_m_list[i] == 1)] = YM0_list[i][:,(select_m_list[i] == 1)]/100
-                YM0_list[i][:,(select_m_list[i] == 0)] = np.log(YM0_list[i][:,(select_m_list[i] == 0)])
+                YM0_list[i][:, (select_m_list[i] == 1)] = YM0_list[i][:, (select_m_list[i] == 1)]/100
+                YM0_list[i][:, (select_m_list[i] == 0)] = np.log(YM0_list[i][:, (select_m_list[i] == 0)])
         
-        YQ0_list[0][:,(select_q[0] == 1)] = YQ0_list[0][:,(select_q[0] == 1)]/100
-        YQ0_list[0][:,(select_q[0] == 0)] = np.log(YQ0_list[0][:,(select_q[0] == 0)])
-        
+        YQ0_list[0][:, (select_q[0] == 1)] = YQ0_list[0][:, (select_q[0] == 1)]/100
+        YQ0_list[0][:, (select_q[0] == 0)] = np.log(YQ0_list[0][:, (select_q[0] == 0)])
         
         YM_list = copy.deepcopy(YM0_list)
         
         # Low frequency data in higher frequency
         YQ_list = deque()
-        YQ_list.append(np.kron(YQ0_list[0], np.ones((freq_ratio_list[0],1))))
+        YQ_list.append(np.kron(YQ0_list[0], np.ones((freq_ratio_list[0], 1))))
         
         Tstar_list = deque()
         T_list = deque()
@@ -234,25 +226,20 @@ class mufbvar_data:
         
         if YM_list[0].size:
             Tstar_list.append(YM_list[0].shape[0])
-            YDATA_list.append(np.full((Tstar_list[0],nv_list[0]), np.nan))
-            YDATA_list[0][:,:Nm_list[0]] = YM_list[0]
+            YDATA_list.append(np.full((Tstar_list[0], nv_list[0]), np.nan))
+            YDATA_list[0][:, :Nm_list[0]] = YM_list[0]
         else:
             Tstar_list.append(YQ_list[0].shape[0])
-            YDATA_list.append(np.full((0,nv_list[0]), np.nan))
+            YDATA_list.append(np.full((0, nv_list[0]), np.nan))
             
         T_list.append(YQ_list[0].shape[0])
-        #for freq in range(1,len(self.frequencies)-1):
-        #    T_list.append(np.kron(YMX_list[freq-1], np.ones((freq_ratio_list[freq],1))).shape[0])
-        
         
         if YDATA_list[0].size:     
-            YDATA_list[0][:T_list[0],Nm_list[0]:] = YQ_list[0]   
+            YDATA_list[0][:T_list[0], Nm_list[0]:] = YQ_list[0]   
         else:
             YDATA_list[0] = YQ_list[0] 
             
-        
-        #attach variables to instance
-        
+        # Attach variables to instance
         self.YMX_list = YMX_list
         self.YM0_list = YM0_list
         self.select_m_list = select_m_list
@@ -264,7 +251,7 @@ class mufbvar_data:
         self.YQX_list = YQX_list
         self.YQ0_list = YQ0_list
         self.select_q = select_q
-        self.input_data_Q =  input_data_Q
+        self.input_data_Q = input_data_Q
         self.varlist_list = varlist_list
         self.select_list = select_list
         self.select_c_list = select_c_list

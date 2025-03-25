@@ -343,33 +343,39 @@ def calc_yyact(hyp, YY, spec):
     nobs = int(spec[4])  # number of observations
 
     # Dummy observations - obtain mean and standard deviation from expanded pre-sample data
-    YY0 = YY[:int(T0 + 16), :]
-    ybar = np.mean(YY0, axis=0)[:, np.newaxis]
-    sbar = np.std(YY0, axis=0, ddof=1)[:, np.newaxis]
+    # Use a safer approach to handle potential size mismatches
+    T0_safe = min(T0, YY.shape[0])
+    sample_data = YY[:min(T0_safe + 16, YY.shape[0]), :]
+    
+    ybar = np.mean(sample_data, axis=0)[:, np.newaxis]
+    sbar = np.std(sample_data, axis=0, ddof=1)[:, np.newaxis]
     premom = np.hstack((ybar, sbar))
 
     # Create matrices with dummy observations
     YYdum, XXdum = varprior(nv, nlags_, nex_, hyp, premom)
 
-    # Actual observations
-    YYact = YY[T0:T0 + nobs, :]
-    XXact = np.zeros((nobs, nv * nlags_))
+    # Actual observations - ensure we don't exceed data bounds
+    actual_obs = min(nobs, YY.shape[0] - T0)
+    if actual_obs < nobs:
+        print(f"Warning: Requested {nobs} observations but only {actual_obs} available after lag period")
+    
+    YYact = YY[T0:T0 + actual_obs, :]
+    XXact = np.zeros((actual_obs, nv * nlags_ + nex_))
 
+    # Fill in the lags safely
     for i in range(nlags_):
-        start_idx = T0 - 1 - i
-        end_idx = min(T0 + nobs - (i + 1), YY.shape[0])
+        for t in range(actual_obs):
+            lag_idx = T0 + t - (i + 1)
+            if 0 <= lag_idx < YY.shape[0]:
+                XXact[t, i * nv:(i + 1) * nv] = YY[lag_idx, :]
+            else:
+                # If lag goes beyond available data, use the first observation
+                XXact[t, i * nv:(i + 1) * nv] = YY[0, :]
 
-        # Check if the slice ranges are valid
-        if start_idx < 0 or end_idx > YY.shape[0]:
-            raise ValueError(f"Invalid slice range: [{start_idx}:{end_idx}] for YY shape {YY.shape}")
-
-        # Assign the values
-        XXact[:, i * nv:(i + 1) * nv] = YY[start_idx:end_idx, :]
-
-    XXact = np.hstack((XXact, np.ones((nobs, 1))))
+    # Add constant term
+    XXact[:, -nex_:] = 1.0
 
     return YYact, YYdum, XXact, XXdum
-
             
             
 def prior_pdf(hyp,YY,spec,PHI,SIG):
