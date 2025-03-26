@@ -72,21 +72,11 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
     
     nlags = self.nlags
     
-    # Validate frequency ratios - should have exactly three frequencies
-    if len(frequencies) != 3:
-        raise ValueError(f"Expected exactly 3 frequencies, got {len(frequencies)}")
-    
-    # Get frequency ratios
-    rqm = freq_ratio_list[0]  # Quarterly to monthly ratio (3)
-    rmw = freq_ratio_list[1]  # Monthly to weekly ratio (4)
-    rqw = rqm * rmw          # Quarterly to weekly ratio (12)
-    
-    # Check that frequency ratios are as expected
-    assert rqm == 3, f"Expected quarterly-to-monthly ratio of 3, got {rqm}"
-    assert rmw == 4, f"Expected monthly-to-weekly ratio of 4, got {rmw}"
-    assert rqw == 12, f"Expected quarterly-to-weekly ratio of 12, got {rqw}"
-    
-    print(f"Working with frequency ratios - Q:M = {rqm}, M:W = {rmw}, Q:W = {rqw}")
+    # Validate frequency ratios
+    rmw = freq_ratio_list[1]  # Monthly to weekly ratio
+    rqw = freq_ratio_list[0] * rmw  # Quarterly to weekly ratio
+    assert rmw == 4, "Monthly aggregation requires exactly 4 weeks/month"
+    assert rqw == 12, "Quarterly aggregation requires exactly 12 weeks/quarter"
     
     # Extract variable counts
     Nq = Nq_list[0]  # Quarterly variables
@@ -94,88 +84,90 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
     Nw = Nm_list[1]  # Weekly variables
     Ntotal = Nq + Nm + Nw  # Total number of variables across all frequencies
     
-    print(f"Variable counts - Q: {Nq}, M: {Nm}, W: {Nw}, Total: {Ntotal}")
-    
-    # Store for later use
-    self.variables_per_freq = [Nq, Nm, Nw]
-    
     # Extract data for each frequency
     YQ = copy.deepcopy(YQ_list[0])  # Quarterly data
     YM = copy.deepcopy(YM_list[0])  # Monthly data
-    YW = copy.deepcopy(YM_list[1])  # Weekly data
+    YW = copy.deepcopy(YM_list[1])  # Weekly data (second entry in YM_list)
     
     # Get observation counts
     Tw = YW.shape[0]  # Total weekly observations
     Tm = YM.shape[0]  # Monthly observations
     Tq = YQ.shape[0]  # Quarterly observations
     
-    # Number of observations after burn-in
+    # Print data dimensions for verification
+    print(f"Data dimensions - Weekly: {YW.shape}, Monthly: {YM.shape}, Quarterly: {YQ.shape}")
+    
+    # Number of observations after burn-in (T0 = initial lag period)
     T0 = int(nlags)  # Initial observations used for lags
     nobs = Tw - T0  
     
-    # IMPROVED STATE SPACE STRUCTURE
+    # REVISED STATE SPACE STRUCTURE
     # -----------------------------
     
-    # Build a unified state vector with better organization
-    # State = [
-    #   Weekly vars (t), Weekly vars (t-1), ..., Weekly vars (t-p+1),
-    #   Monthly latent vars at weekly frequency,
-    #   Quarterly latent vars at weekly frequency
-    # ]
+    # The key VAR dynamics are specified at the weekly frequency
+    p = self.nlags  # Number of lags for weekly VAR
     
-    p = self.nlags  # Number of lags for the weekly VAR
+    # State vector structure (modified to properly track latent states)
+    # [weekly_vars(t), weekly_vars(t-1), ..., weekly_vars(t-p+1),
+    #  latent_monthly_week1, latent_monthly_week2, latent_monthly_week3, latent_monthly_week4,
+    #  latent_quarterly_week1, ..., latent_quarterly_week12]
     
-    # Define state vector components and sizes
-    weekly_block_size = Nw * p       # Weekly variables with lags
-    monthly_latent_size = Nm * rmw   # Latent weekly states for monthly vars
-    quarterly_latent_size = Nq * rqw # Latent weekly states for quarterly vars
+    weekly_block_size = Nw * p  # Weekly variables with p lags
+    
+    # Allocate state blocks for the latent weekly states of monthly and quarterly variables
+    monthly_latent_size = Nm * rmw  # Each monthly variable needs 4 weeks of latent states
+    quarterly_latent_size = Nq * rqw  # Each quarterly variable needs 12 weeks of latent states
     
     # Total state vector size
     nstate = weekly_block_size + monthly_latent_size + quarterly_latent_size
     
-    print(f"State vector size: {nstate}")
-    print(f"  Weekly block: {weekly_block_size}")
-    print(f"  Monthly latent: {monthly_latent_size}")
-    print(f"  Quarterly latent: {quarterly_latent_size}")
+    # Define starting indices for different components
+    monthly_start = weekly_block_size
+    quarterly_start = monthly_start + monthly_latent_size
+    
+    # Print state vector dimensions for debugging
+    print(f"State vector dimensions - Weekly: {Nw}, Monthly: {Nm}, Quarterly: {Nq}")
+    print(f"State vector structure - Weekly block: {weekly_block_size}, Monthly latent: {monthly_latent_size}, Quarterly latent: {quarterly_latent_size}")
+    print(f"State vector indices - Monthly start: {monthly_start}, Quarterly start: {quarterly_start}")
     
     # Initialize matrices for MCMC sampling
     Sigmap = np.zeros((math.ceil((self.nsim)/self.thining), Ntotal, Ntotal))
-    Phip = np.zeros((math.ceil((self.nsim)/self.thining), Nw*p+1, Nw))  # +1 for constant
-    Cons = np.zeros((math.ceil((self.nsim)/self.thining), Nw))  # Constants
+    Phip = np.zeros((math.ceil((self.nsim)/self.thining), Nw*p+1, Nw))  # +1 for constant, only for weekly VAR 
+    Cons = np.zeros((math.ceil((self.nsim)/self.thining), Nw))  # Constant terms
     
-    # Initialize the state transition matrix F
-    F = np.zeros((nstate, nstate))
-    
-    # 1. Weekly VAR dynamics
-    # Initialize with a stable VAR process
+    # Initialize Phi matrix for weekly VAR coefficients
     Phi = np.vstack((0.95 * np.eye(Nw), np.zeros((Nw*(p-1), Nw)), np.zeros((1, Nw))))  # Include constant
     
-    # VAR coefficient section
+    # Transition matrix F for the full state-space model
+    F = np.zeros((nstate, nstate))
+    
+    # 1. Weekly VAR dynamics in the top-left block
+    # Weekly coefficients section (VAR dynamics)
     F[:Nw, :Nw*p] = Phi[:-1, :].T  # Transpose of VAR coefficients (excluding constant)
     
-    # Lag shifting for weekly vars
+    # Lag shifting section for weekly vars
     for i in range(p-1):
         F[Nw*(i+1):Nw*(i+2), Nw*i:Nw*(i+1)] = np.eye(Nw)
     
     # 2. Latent state transitions for monthly variables
-    monthly_start = weekly_block_size
     
-    # Map weekly innovations to first position of monthly latent states
-    F[monthly_start:monthly_start+Nm, :Nw] = np.eye(Nm, Nw)
+    # Initialize the latent states for monthly variables
+    # Weekly shocks affect the first week of each monthly variable's latent states
+    F[monthly_start:monthly_start+Nm, :Nw] = np.eye(Nm, Nw)  # Map shocks from weekly vars to monthly latent states
     
-    # Shift weeks within each month
+    # Shift weeks within each month for the latent states
     for i in range(rmw-1):
         src_pos = monthly_start + i*Nm
         dest_pos = monthly_start + (i+1)*Nm
         F[dest_pos:dest_pos+Nm, src_pos:src_pos+Nm] = np.eye(Nm)
     
     # 3. Latent state transitions for quarterly variables
-    quarterly_start = monthly_start + monthly_latent_size
     
-    # Map weekly innovations to first position of quarterly latent states
-    F[quarterly_start:quarterly_start+Nq, :Nw] = np.eye(Nq, Nw)
+    # Initialize the latent states for quarterly variables
+    # Weekly shocks affect the first week of each quarterly variable's latent states
+    F[quarterly_start:quarterly_start+Nq, :Nw] = np.eye(Nq, Nw)  # Map shocks from weekly vars to quarterly latent states
     
-    # Shift weeks within each quarter
+    # Shift weeks within each quarter for the latent states
     for i in range(rqw-1):
         src_pos = quarterly_start + i*Nq
         dest_pos = quarterly_start + (i+1)*Nq
@@ -183,49 +175,77 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
     
     # Constant term vector
     c = np.zeros((nstate, 1))
-    c[:Nw] = np.atleast_2d(Phi[-1, :]).T
+    c[:Nw] = np.atleast_2d(Phi[-1, :]).T  # Weekly constant terms
     
     # IMPROVED MEASUREMENT EQUATIONS
-    # ----------------------------
+    # -----------------------------
     
     # 1. Measurement matrix for weekly variables (direct observation)
     H_w = np.zeros((Nw, nstate))
-    H_w[:, :Nw] = np.eye(Nw)
+    H_w[:, :Nw] = np.eye(Nw)  # Directly observe first Nw state elements
     
     # 2. Measurement matrix for monthly variables (temporal aggregation)
     H_m = np.zeros((Nm, nstate))
     
+    # Monthly variables are observed as the temporal aggregation of their latent weekly states
+    # Each month's observation constrains all 4 weeks of latents for that month's variables
     for m in range(Nm):
-        # For each monthly variable, aggregate its weekly latent states
         for w in range(rmw):
+            state_idx = monthly_start + w*Nm + m
             if self.temp_agg == 'mean':
-                H_m[m, monthly_start + w*Nm + m] = 1.0/rmw  # Average
+                H_m[m, state_idx] = 1.0/rmw  # Average of 4 weeks
             else:  # 'sum'
-                H_m[m, monthly_start + w*Nm + m] = 1.0  # Sum
+                H_m[m, state_idx] = 1.0  # Sum of 4 weeks
     
     # 3. Measurement matrix for quarterly variables (temporal aggregation)
     H_q = np.zeros((Nq, nstate))
     
+    # Quarterly variables are observed as the temporal aggregation of their latent weekly states
+    # Each quarter's observation constrains all 12 weeks of latents for that quarter's variables
     for q in range(Nq):
-        # For each quarterly variable, aggregate its weekly latent states
         for w in range(rqw):
+            state_idx = quarterly_start + w*Nq + q
             if self.temp_agg == 'mean':
-                H_q[q, quarterly_start + w*Nq + q] = 1.0/rqw  # Average
+                H_q[q, state_idx] = 1.0/rqw  # Average of 12 weeks
             else:  # 'sum'
-                H_q[q, quarterly_start + w*Nq + q] = 1.0  # Sum
+                H_q[q, state_idx] = 1.0  # Sum of 12 weeks
     
-    # System covariance matrix
+    # Add validation prints for measurement matrices
+    for m in range(min(3, Nm)):
+        m_indices = np.where(H_m[m, :] != 0)[0]
+        print(f"Monthly var {m+1} uses {len(m_indices)} state indices: {m_indices[:5]}...")
+    
+    for q in range(min(3, Nq)):
+        q_indices = np.where(H_q[q, :] != 0)[0]
+        print(f"Quarterly var {q+1} uses {len(q_indices)} state indices: {q_indices[:5]}...")
+    
+    # Initialize state and covariance matrices
     Q = np.zeros((nstate, nstate))
     Q[:Nw, :Nw] = 1e-4 * np.eye(Nw)  # Process noise affects weekly states directly
     
-    # Measurement noise covariance (small for numerical stability)
-    R_w = 1e-8 * np.eye(Nw)
-    R_m = 1e-8 * np.eye(Nm)
-    R_q = 1e-8 * np.eye(Nq)
-    
-    # Initialize state and covariance
     a_t = np.zeros(nstate)
     P_t = np.eye(nstate)
+    
+    # IMPROVED INITIALIZATION: Initialize latent states with actual data
+    # -----------------------------------------------------------------
+    
+    # Initialize monthly latent states with available data
+    if YM.shape[0] > 0:
+        # Use the first available monthly observation to initialize latent states
+        m_values = YM[0, :]
+        for m in range(Nm):
+            for w in range(rmw):
+                a_t[monthly_start + w*Nm + m] = m_values[m]
+    
+    # Initialize quarterly latent states with available data
+    if YQ.shape[0] > 0:
+        # Use the first available quarterly observation to initialize latent states
+        q_values = YQ[0, :]
+        for q in range(Nq):
+            for w in range(rqw):
+                a_t[quarterly_start + w*Nq + q] = q_values[q]
+    
+    print("Initialized latent states with actual monthly and quarterly data")
     
     # Initialize stability by iterating a few times
     for _ in range(5):
@@ -238,67 +258,47 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
     
     # Prepare data for Kalman filtering
     
-    # Map quarterly and monthly observations to weekly time indices
-    obs_map_q = np.zeros(Tw, dtype=bool)  # True where quarterly obs available
-    obs_map_m = np.zeros(Tw, dtype=bool)  # True where monthly obs available
-    obs_map_w = np.zeros(Tw, dtype=bool)  # True where weekly obs available
-    
+    # Resample the quarterly and monthly data to weekly frequency
     YQ_weekly = np.zeros((Tw, Nq))
     YM_weekly = np.zeros((Tw, Nm))
     
-    # Fill quarterly observations
+    # Fill in the values and mark which observations are available
+    q_obs_available = np.zeros(Tw, dtype=bool)
+    m_obs_available = np.zeros(Tw, dtype=bool)
+    
+    # Quarterly data is available every rqw weeks (12 weeks)
     for t in range(0, Tw, rqw):
         q_idx = t // rqw
         if q_idx < Tq:
             YQ_weekly[t] = YQ[q_idx]
-            obs_map_q[t] = True
+            q_obs_available[t] = True
     
-    # Fill monthly observations
+    # Monthly data is available every rmw weeks (4 weeks)
     for t in range(0, Tw, rmw):
         m_idx = t // rmw
         if m_idx < Tm:
             YM_weekly[t] = YM[m_idx]
-            obs_map_m[t] = True
-    
-    # All weekly observations are available
-    obs_map_w[:Tw] = True
+            m_obs_available[t] = True
     
     # Prepare lagged data for the VAR
-    print(f"Preparing Kalman filter with {nobs} observations...")
-    print(f"Weekly data shape: {YW.shape}, Monthly data shape: {YM.shape}, Quarterly data shape: {YQ.shape}")
-
-    # Initialize Z matrix for lagged weekly variables
     Z = np.zeros((nobs, Nw * p))
-
-    # Fill Z matrix with proper bounds checking
-    available_obs = min(nobs, YW.shape[0] - T0)
-    if available_obs < nobs:
-        print(f"Warning: Only {available_obs} out of {nobs} requested observations available")
-
-    for i in range(available_obs):
+    for i in range(nobs):
         for j in range(p):
-            lag_idx = T0 + i - j - 1
-            if 0 <= lag_idx < YW.shape[0]:
-                Z[i, j*Nw:(j+1)*Nw] = YW[lag_idx, :]
-            elif lag_idx < 0:
-                # For lags before the start of the data, use first observation
-                print(f"Warning: Lag at position {lag_idx} is before data start. Using first observation.")
-                Z[i, j*Nw:(j+1)*Nw] = YW[0, :]
-            else:
-                # Should not happen with proper bounds checking
-                print(f"Warning: Lag at position {lag_idx} is beyond data end. Using zeros.")
+            if T0+i-j-1 >= 0 and T0+i-j-1 < Tw:  # Bounds check
+                Z[i, j*Nw:(j+1)*Nw] = YW[T0+i-j-1, :]
     
-    # Storage for MCMC sampling
-    a_draws = np.zeros((self.nsim, nobs, nstate))
+    # Initialize storage for MCMC sampling
+    a_draws = np.zeros((self.nsim, nobs, nstate))  # Store all states
     
-    print(" ", end='\n')
-    print("Multi Frequency BVAR: Estimation - Unified Three Frequency Approach", end='\n')
-    print("Frequencies: ", self.frequencies, end="\n")
+    print(" ", end = '\n')
+    print("Multi Frequency BVAR: Estimation - Unified Three Frequency Approach", end = '\n')
+    print("Frequencies: ", self.frequencies, end = "\n")
     print("Total Number of Draws: ", self.nsim)
     
     # Main sampling loop
     for j in tqdm(range(self.nsim)):
-        # If it's not the first iteration, use the previous draw's last state
+        # If it's the first iteration, use the initialized state and covariance
+        # Otherwise, use the last state from the previous draw
         if j > 0:
             a_t = a_draws[j-1, -1]
             P_t = P_filtered[-1]
@@ -306,58 +306,70 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
         # Kalman filter loop
         for t in range(nobs):
             # Prediction step
-            a_pred = F @ a_t + c.flatten()
+            a_pred = F @ a_t + c.flatten()  # Ensure compatible shapes
             P_pred = F @ P_t @ F.T + Q
-            P_pred = 0.5 * (P_pred + P_pred.T)  # Ensure symmetry
             
-            # Weekly index
+            # Ensure symmetry
+            P_pred = 0.5 * (P_pred + P_pred.T)
+            
+            # Current week index
             w_idx = T0 + t
             
-            # Determine which observations are available at this time step
-            use_q = obs_map_q[w_idx]
-            use_m = obs_map_m[w_idx]
-            use_w = obs_map_w[w_idx] and w_idx < len(YW) and not np.all(np.isnan(YW[w_idx]))
+            # IMPROVED OBSERVATION MATCHING: Better identify month and quarter ends
+            # Determine which measurements are available
+            # We need month and quarter end points - these are when aggregated observations are available
+            is_month_end = ((w_idx + 1) % rmw == 0)
+            is_quarter_end = ((w_idx + 1) % rqw == 0)
             
-            # Collect available observations and measurement matrices
+            # Get current month and quarter indices
+            m_idx = (w_idx + 1) // rmw - 1 if is_month_end else -1
+            q_idx = (w_idx + 1) // rqw - 1 if is_quarter_end else -1
+            
+            # If first iteration of first draw, add debug info
+            if j == 0 and t < 5:
+                print(f"Week {w_idx}: month_end={is_month_end}, quarter_end={is_quarter_end}, m_idx={m_idx}, q_idx={q_idx}")
+            
+            # Initialize valid measurement tracking
             H_matrices = []
             y_obs = []
-            R_matrices = []
             
-            if use_w:
+            # Check for weekly observations
+            if w_idx < Tw and w_idx < len(YW) and not np.all(np.isnan(YW[w_idx])):
                 try:
-                    H_matrices.append(H_w)
-                    y_obs.append(YW[w_idx])
-                    R_matrices.append(R_w)
-                except Exception as e:
+                    w_data = np.asarray(YW[w_idx], dtype=float)
+                    if len(w_data) == Nw:
+                        H_matrices.append(H_w)
+                        y_obs.append(w_data)
+                        if j == 0 and t < 3:
+                            print(f"  Adding weekly observation: {w_data}")
+                except (IndexError, ValueError) as e:
                     if t == 0 and j == 0:
-                        print(f"Error with weekly data at t={w_idx}: {e}")
+                        print(f"DEBUG: Error processing weekly data at w_idx={w_idx}: {e}")
             
-            if use_m:
-                try:
-                    H_matrices.append(H_m)
-                    y_obs.append(YM_weekly[w_idx])
-                    R_matrices.append(R_m)
-                except Exception as e:
-                    if t == 0 and j == 0:
-                        print(f"Error with monthly data at t={w_idx}: {e}")
+            # Check for monthly observations - only available at the end of month
+            if is_month_end and 0 <= m_idx < YM.shape[0]:
+                H_matrices.append(H_m)
+                y_obs.append(YM[m_idx])
+                if j == 0 and t < 3:
+                    print(f"  Adding monthly observation: {YM[m_idx]}")
             
-            if use_q:
-                try:
-                    H_matrices.append(H_q)
-                    y_obs.append(YQ_weekly[w_idx])
-                    R_matrices.append(R_q)
-                except Exception as e:
-                    if t == 0 and j == 0:
-                        print(f"Error with quarterly data at t={w_idx}: {e}")
+            # Check for quarterly observations - only available at the end of quarter
+            if is_quarter_end and 0 <= q_idx < YQ.shape[0]:
+                H_matrices.append(H_q)
+                y_obs.append(YQ[q_idx])
+                if j == 0 and t < 3:
+                    print(f"  Adding quarterly observation: {YQ[q_idx]}")
             
-            # If we have observations, update the state estimate
+            # If we have valid measurements, proceed with Kalman update
             if H_matrices and y_obs:
-                # Stack matrices and observations
+                # Stack measurement matrices and observations
                 H = np.vstack(H_matrices)
                 y = np.concatenate(y_obs)
-                R = block_diag(*R_matrices)
                 
-                # Kalman filter update equations
+                # Measurement noise covariance
+                R = 1e-8 * np.eye(len(y))  # Small noise for numerical stability
+                
+                # Update step
                 y_hat = H @ a_pred
                 nu = y - y_hat  # Innovation
                 
@@ -368,27 +380,21 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
                     K = P_pred @ H.T @ invert_matrix(S)  # Kalman gain
                     a_t = a_pred + K @ nu
                     P_t = P_pred - K @ H @ P_pred
-                    P_t = 0.5 * (P_t + P_t.T)  # Ensure symmetry
+                    # Ensure symmetry
+                    P_t = 0.5 * (P_t + P_t.T)
                 except np.linalg.LinAlgError as e:
                     if t == 0 and j == 0:
-                        print(f"Matrix inversion failed: {e} - using prediction only")
+                        print(f"DEBUG: Matrix inversion failed: {e} - using prediction only")
                     a_t = a_pred
                     P_t = P_pred
             else:
-                # No observations - use prediction only
+                # No valid observations - just use prediction
                 a_t = a_pred
                 P_t = P_pred
             
-            # Store filtered states
+            # Store filtered state
             a_filtered[t] = a_t
             P_filtered[t] = P_t
-            
-            # Check state consistency every 100 steps and at the end
-            if t % 100 == 0 or t == nobs-1:
-                state_ok = check_state_consistency(
-                    a_t, Nw, Nm, Nq, monthly_start, quarterly_start, rmw, rqw)
-                if not state_ok and j == 0:
-                    print(f"State consistency issues at t={t}")
         
         # Kalman Smoother
         a_smooth = np.zeros((nobs, nstate))
@@ -404,26 +410,27 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
             a_draw = a_smooth[-1] + Pchol @ np.random.standard_normal(nstate)
             a_draws[j, -1] = a_draw
             
-            # Backwards recursion for smoothing
+            # Backwards recursion for smoothing and drawing states
             for t in range(nobs-2, -1, -1):
+                # Get filtered state and covariance
                 a_t = a_filtered[t]
                 P_t = P_filtered[t]
                 
                 # Predict one step ahead
                 a_pred = F @ a_t + c.flatten()
                 P_pred = F @ P_t @ F.T + Q
-                P_pred = 0.5 * (P_pred + P_pred.T)
+                P_pred = 0.5 * (P_pred + P_pred.T)  # Ensure symmetry
                 
                 try:
                     # Smoothing gain
                     J_t = P_t @ F.T @ invert_matrix(P_pred)
                     
-                    # Smoothed state and covariance
+                    # Smoothed mean and covariance
                     a_smooth_t = a_t + J_t @ (a_draw - a_pred)
                     P_smooth_t = P_t - J_t @ (P_pred - P_smooth[t+1]) @ J_t.T
-                    P_smooth_t = 0.5 * (P_smooth_t + P_smooth_t.T)
+                    P_smooth_t = 0.5 * (P_smooth_t + P_smooth_t.T)  # Ensure symmetry
                     
-                    # Draw from smoothed distribution
+                    # Draw state
                     Pchol = cholcovOrEigendecomp(P_smooth_t)
                     a_draw = a_smooth_t + Pchol @ np.random.standard_normal(nstate)
                     
@@ -434,165 +441,116 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
                     
                 except Exception as e:
                     if j == 0:
-                        print(f"Error in smoothing at t={t}: {e}")
+                        print(f"DEBUG: Error in smoothing at t={t}: {e}")
+                    # Use filtered state as fallback
                     a_smooth[t] = a_filtered[t]
                     P_smooth[t] = P_filtered[t]
                     a_draws[j, t] = a_filtered[t] + np.random.standard_normal(nstate) * 1e-4
             
         except Exception as e:
             if j == 0:
-                print(f"Error in smoother initialization: {e}")
+                print(f"DEBUG: Error in smoother initialization: {e}")
             # Use filtered states as fallback
             a_draws[j] = a_filtered
         
-        # Extract latent states for each frequency
-        W_smooth = a_draws[j, :, :Nw]  # Weekly variables
+        # Extract smoothed time series for each frequency
+        # Note the change in indexing to match the revised state space structure
+        W_smooth = a_draws[j, :, :Nw]  # Weekly variables - directly observed
         
-        # Extract monthly and quarterly latent variables with proper temporal aggregation
+        # For monthly and quarterly, extract from the latent blocks for VAR estimation
+        # This is a simplification - proper handling would adjust based on temporal aggregation
         M_smooth = np.zeros((nobs, Nm))
         Q_smooth = np.zeros((nobs, Nq))
         
+        # Extract monthly and quarterly variables - taking temporal aggregation into account
         for t in range(nobs):
-            # Monthly variables - aggregate latent weekly states
+            # For monthly vars - average over the latent weekly states 
             for m in range(Nm):
                 if self.temp_agg == 'mean':
+                    # Average the 4 weeks of latent states for each monthly variable
                     M_smooth[t, m] = np.mean([a_draws[j, t, monthly_start + w*Nm + m] for w in range(rmw)])
                 else:
+                    # Sum the 4 weeks of latent states
                     M_smooth[t, m] = np.sum([a_draws[j, t, monthly_start + w*Nm + m] for w in range(rmw)])
                     
-            # Quarterly variables - aggregate latent weekly states
+            # For quarterly vars - average over the latent weekly states
             for q in range(Nq):
                 if self.temp_agg == 'mean':
+                    # Average the 12 weeks of latent states for each quarterly variable
                     Q_smooth[t, q] = np.mean([a_draws[j, t, quarterly_start + w*Nq + q] for w in range(rqw)])
                 else:
+                    # Sum the 12 weeks of latent states
                     Q_smooth[t, q] = np.sum([a_draws[j, t, quarterly_start + w*Nq + q] for w in range(rqw)])
         
-        # VALIDATION OF TEMPORAL AGGREGATION
-        # ---------------------------------
-        if j == 0:  # Only check on first iteration
-            # Validate monthly aggregation
-            m_errors = []
-            m_errors_by_var = [[] for _ in range(Nm)]
-            
-            for t in range(0, nobs, rmw):
-                m_idx = (T0 + t) // rmw
-                if m_idx < Tm:
-                    # Compare aggregated weekly latent states with observed monthly data
-                    for m in range(Nm):
-                        agg_value = 0
-                        for w in range(min(rmw, nobs-t)):
-                            agg_value += a_draws[j, t+w, monthly_start + w*Nm + m]
+        # Add validation of temporal aggregation at end of first draw
+        if j == 0:
+            # Verify monthly aggregation
+            print("\nValidating monthly aggregation:")
+            for m in range(min(2, Nm)):  # Check first two monthly variables
+                for t_check in range(0, min(24, nobs), rmw):  # Check a few months
+                    month_idx = (T0 + t_check) // rmw
+                    if month_idx < Tm:
+                        # Get the 4 weeks of latent states for this month
+                        latent_values = [a_draws[j, t_check + w, monthly_start + w*Nm + m] for w in range(min(rmw, nobs-t_check))]
                         
+                        # Calculate aggregated value
                         if self.temp_agg == 'mean':
-                            agg_value /= rmw
+                            agg_value = np.mean(latent_values)
+                        else:
+                            agg_value = np.sum(latent_values)
                             
-                        error = abs(agg_value - YM[m_idx, m])
-                        m_errors.append(error)
-                        m_errors_by_var[m].append(error)
+                        # Compare with observed monthly value
+                        obs_value = YM[month_idx, m]
+                        print(f"Month {month_idx+1}, Var {m+1}: Agg={agg_value:.6f}, Obs={obs_value:.6f}, Error={abs(agg_value-obs_value):.6f}")
             
-            # Validate quarterly aggregation
-            q_errors = []
-            q_errors_by_var = [[] for _ in range(Nq)]
-            
-            for t in range(0, nobs, rqw):
-                q_idx = (T0 + t) // rqw
-                if q_idx < Tq:
-                    # Compare aggregated weekly latent states with observed quarterly data
-                    for q in range(Nq):
-                        agg_value = 0
-                        for w in range(min(rqw, nobs-t)):
-                            agg_value += a_draws[j, t+w, quarterly_start + w*Nq + q]
+            # Verify quarterly aggregation
+            print("\nValidating quarterly aggregation:")
+            for q in range(min(2, Nq)):  # Check first two quarterly variables
+                for t_check in range(0, min(24, nobs), rqw):  # Check a few quarters
+                    quarter_idx = (T0 + t_check) // rqw
+                    if quarter_idx < Tq:
+                        # Get the 12 weeks of latent states for this quarter
+                        latent_values = [a_draws[j, t_check + w, quarterly_start + w*Nq + q] for w in range(min(rqw, nobs-t_check))]
                         
+                        # Calculate aggregated value
                         if self.temp_agg == 'mean':
-                            agg_value /= rqw
+                            agg_value = np.mean(latent_values)
+                        else:
+                            agg_value = np.sum(latent_values)
                             
-                        error = abs(agg_value - YQ[q_idx, q])
-                        q_errors.append(error)
-                        q_errors_by_var[q].append(error)
-            
-            # Overall validation reporting
-            print(f"Validation - Monthly aggregation error: Mean={np.mean(m_errors):.6f}, Max={np.max(m_errors):.6f}")
-            print(f"Validation - Quarterly aggregation error: Mean={np.mean(q_errors):.6f}, Max={np.max(q_errors):.6f}")
-            
-            # Detailed per-variable validation reporting
-            print(f"\nDetailed validation results:")
-            
-            print(f"Monthly aggregation by variable:")
-            for m in range(Nm):
-                if m_errors_by_var[m]:
-                    print(f"  Monthly var {m+1}: Mean={np.mean(m_errors_by_var[m]):.6f}, "
-                        f"Max={np.max(m_errors_by_var[m]):.6f}, "
-                        f"Min={np.min(m_errors_by_var[m]):.6f}")
-                else:
-                    print(f"  Monthly var {m+1}: No validation points")
-            
-            print(f"Quarterly aggregation by variable:")
-            for q in range(Nq):
-                if q_errors_by_var[q]:
-                    print(f"  Quarterly var {q+1}: Mean={np.mean(q_errors_by_var[q]):.6f}, "
-                        f"Max={np.max(q_errors_by_var[q]):.6f}, "
-                        f"Min={np.min(q_errors_by_var[q]):.6f}")
-                else:
-                    print(f"  Quarterly var {q+1}: No validation points")
-            
-            # Print warning if errors are too large
-            if np.mean(m_errors) > 0.01 or np.mean(q_errors) > 0.01:
-                print("\nWARNING: Significant aggregation errors detected!")
-                print("This may indicate issues with the temporal aggregation mechanism.")
-                print("Consider checking frequency ratios and aggregation method.")
+                        # Compare with observed quarterly value
+                        obs_value = YQ[quarter_idx, q]
+                        print(f"Quarter {quarter_idx+1}, Var {q+1}: Agg={agg_value:.6f}, Obs={obs_value:.6f}, Error={abs(agg_value-obs_value):.6f}")
+                        print(f"  Latent values: {[f'{v:.6f}' for v in latent_values[:6]]}...")
         
-        # Combine all smoothed variables for VAR estimation
-        YY = W_smooth  # Use weekly variables for VAR estimation
-
-        # Check if we have enough observations for VAR estimation
-        if YY.shape[0] < p:
-            raise ValueError(f"Not enough observations for VAR estimation. Need at least {p} but have {YY.shape[0]}")
-
-        # Compute specification for VAR
-        nobs_ = YY.shape[0]
-        if nobs_ < T0 + p:
-            print(f"Warning: Not enough observations for prior calculation. " 
-                f"Requested {T0 + p} but have {nobs_}")
-            # Adjust T0 to ensure we have enough observations
-            T0_adjusted = max(0, nobs_ - p)
-            if T0_adjusted != T0:
-                print(f"Adjusting T0 from {T0} to {T0_adjusted}")
-                T0 = T0_adjusted
-
-        spec = np.hstack((p, T0, self.nex, Nw, nobs_))
-
-        # Calculate actual and dummy observations with better error handling
-        try:
-            YYact, YYdum, XXact, XXdum = calc_yyact(self.hyp, YY, spec)
-            
-            if YYact.shape[0] == 0:
-                raise ValueError("No actual observations available for VAR estimation")
-                
-            print(f"VAR estimation data shapes - YYact: {YYact.shape}, XXact: {XXact.shape}")
-        except Exception as e:
-            print(f"Error in VAR observation calculation: {e}")
-            raise
+        # Combine all data for VAR estimation - only use weekly data for VAR dynamics
+        # since monthly and quarterly are derived from weekly
+        YY = W_smooth
         
-        # Store simulation results
+        # Compute actual observations for Minnesota prior
+        nobs_ = YY.shape[0] - T0  # Adjusted for lags
+        spec = np.hstack((p, T0, self.nex, Nw, nobs_))  # Only Nw for VAR, not Ntotal
+        
+        # Calculate dummy observations - modified to only use weekly variables for VAR
+        YYact, YYdum, XXact, XXdum = calc_yyact(self.hyp, YY, spec)
+        
+        # Store simulation results if needed
         if (j % self.thining == 0):
             j_temp = int(j/self.thining)
             if j == 0:
-                # Initialize storage for all variables
+                # Initialize storage on first iteration
                 YYactsim_list = [np.zeros((math.ceil((self.nsim)/self.thining), rmw, Ntotal))]
-                XXactsim_list = [np.zeros((math.ceil((self.nsim)/self.thining), rmw, Nw*p+1))]
+                XXactsim_list = [np.zeros((math.ceil((self.nsim)/self.thining), rmw, Nw*p+1))]  # Only for weekly VAR
             
-            # Store combined data
-            combined_data = np.hstack((W_smooth[-rmw:, :], M_smooth[-rmw:, :], Q_smooth[-rmw:, :]))
-            YYactsim_list[0][j_temp, :, :] = combined_data
-            
-            # Store lagged values for VAR
-            if Z.shape[0] >= rmw:
-                XXactsim_list[0][j_temp, :, :] = np.hstack((Z[-rmw:, :], np.ones((rmw, 1))))
+            # Store the combined data for later use
+            YYactsim_list[0][j_temp, :, :] = np.hstack((W_smooth[-rmw:, :], M_smooth[-rmw:, :], Q_smooth[-rmw:, :]))
+            XXactsim_list[0][j_temp, :, :] = np.hstack((Z[-rmw:, :], np.ones((rmw, 1))))
         
-        # Draw from posterior distribution
+        # Draws from posterior distribution - use only weekly variables for VAR
         try:
-            # Prepare matrices for posterior sampling
             Tdummy, n = YYdum.shape
+            n = int(n)
+            Tdummy = int(Tdummy)
             Tobs, n = YYact.shape
             X = np.vstack((XXact, XXdum))
             Y = np.vstack((YYact, YYdum))
@@ -609,96 +567,78 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
             
             Sigma = (Y - X @ Phi_tilde).T @ (Y - X @ Phi_tilde)
             
-            # Draw covariance matrix
+            # Draw from inverse Wishart for covariance matrix of weekly variables
             sigma_w = invwishart.rvs(scale=Sigma, df=T-Nw*p-1)
             
             # Draw VAR coefficients and check stability
             attempts = 0
-            max_attempts = 100
-            phi_success = False
-
-            while attempts < max_attempts and not phi_success:
-                try:
-                    sigma_chol = cholcovOrEigendecomp(np.kron(sigma_w, inv_x))
-                    phi_new = np.squeeze(Phi_tilde.reshape(Nw*(Nw*p+1), 1, order="F")) + sigma_chol @ np.random.standard_normal(sigma_chol.shape[0])
-                    Phi_w = phi_new.reshape(Nw*p+1, Nw, order="F")
-                    
-                    # Check if VAR is stable (not explosive)
-                    if not is_explosive(Phi_w, Nw, p):
-                        phi_success = True
-                    else:
-                        attempts += 1
-                        if attempts % 20 == 0:  # Log only occasionally to avoid cluttering output
-                            print(f"Attempt {attempts}: Explosive VAR, redrawing coefficients...")
-                except Exception as e:
-                    attempts += 1
-                    if j == 0:
-                        print(f"Error in VAR coefficient sampling attempt {attempts}: {e}")
-
-            if not phi_success:
-                explosive_counter += 1
-                print(f"WARNING: Failed to find stable VAR after {max_attempts} attempts")
-                
-                # Use posterior mean with slight damping as fallback
-                print(f"Using damped posterior mean as fallback")
-                Phi_w = Phi_tilde.copy()
-                # Apply damping to make it more stable
-                if Phi_w.shape[0] > 1:
-                    damping_factor = 0.95
-                    Phi_w[:-1, :] *= damping_factor  # Dampen all but constant term
+            while attempts < 1000:
+                sigma_chol = cholcovOrEigendecomp(np.kron(sigma_w, inv_x))
+                phi_new = np.squeeze(Phi_tilde.reshape(Nw*(Nw*p+1), 1, order="F")) + sigma_chol @ np.random.standard_normal(sigma_chol.shape[0])
+                Phi_w = phi_new.reshape(Nw*p+1, Nw, order="F")
+                if not is_explosive(Phi_w, Nw, p):
+                    break
+                attempts += 1
             
+            if attempts == 1000:
+                explosive_counter += 1
+                print(f"Explosive VAR detected {explosive_counter} times.")
+                continue
+                
             # Construct full covariance matrix for all variables
             # We need to derive the joint covariance for weekly, monthly, and quarterly variables
             
-            # For simplicity, start with a block diagonal structure
-            sigma = np.zeros((Ntotal, Ntotal))
-            sigma[:Nw, :Nw] = sigma_w
-            
-            # Monthly and quarterly covariances - for now using a simplified approach
-            monthly_var = 0.01 * np.eye(Nm)
-            quarterly_var = 0.01 * np.eye(Nq)
+            # For simplicity, assume independence between frequencies initially
+            # This is a simplified approach - in a real implementation, these would be estimated jointly
+            sigma_m = np.eye(Nm) * 0.01  # Placeholder covariance for monthly vars
+            sigma_q = np.eye(Nq) * 0.01  # Placeholder covariance for quarterly vars
             
             # Create a block diagonal covariance matrix
-            sigma[Nw:Nw+Nm, Nw:Nw+Nm] = monthly_var
-            sigma[Nw+Nm:, Nw+Nm:] = quarterly_var
-            
-            # Cross-covariances between frequencies - for a proper implementation these 
-            # would be estimated from the data, but for simplicity we use small values
-            sigma[:Nw, Nw:Nw+Nm] = 0.001 * np.ones((Nw, Nm))
-            sigma[Nw:Nw+Nm, :Nw] = 0.001 * np.ones((Nm, Nw))
-            
-            sigma[:Nw, Nw+Nm:] = 0.001 * np.ones((Nw, Nq))
-            sigma[Nw+Nm:, :Nw] = 0.001 * np.ones((Nq, Nw))
-            
-            sigma[Nw:Nw+Nm, Nw+Nm:] = 0.001 * np.ones((Nm, Nq))
-            sigma[Nw+Nm:, Nw:Nw+Nm] = 0.001 * np.ones((Nq, Nm))
-            
-            # Ensure symmetry
-            sigma = 0.5 * (sigma + sigma.T)
+            sigma = np.zeros((Ntotal, Ntotal))
+            sigma[:Nw, :Nw] = sigma_w
+            sigma[Nw:Nw+Nm, Nw:Nw+Nm] = sigma_m
+            sigma[Nw+Nm:, Nw+Nm:] = sigma_q
             
             # Store posterior draws
             if (j % self.thining == 0):
                 j_temp = int(j/self.thining)
                 Sigmap[j_temp, :, :] = sigma
-                Phip[j_temp, :, :] = Phi_w
-                Cons[j_temp, :] = Phi_w[-1, :]
+                Phip[j_temp, :, :] = Phi_w  # Store only weekly VAR coefficients
+                Cons[j_temp, :] = Phi_w[-1, :]  # Constants for weekly vars
                 valid_draws.append(j_temp)
             
-            # Update the state transition matrices
-            # Update weekly VAR coefficients in F
+            # Update the transition matrix for the next iteration
+            # Update weekly VAR coefficients
             F[:Nw, :Nw*p] = Phi_w[:-1, :].T
             c[:Nw] = np.atleast_2d(Phi_w[-1, :]).T
             
-            # Update system covariance for weekly block
+            # Make sure the shifting blocks remain intact for temporal aggregation
+            # Monthly block shifting
+            for i in range(rmw-1):
+                src_pos = monthly_start + i*Nm
+                dest_pos = monthly_start + (i+1)*Nm
+                F[dest_pos:dest_pos+Nm, src_pos:src_pos+Nm] = np.eye(Nm)
+                
+            # Quarterly block shifting
+            for i in range(rqw-1):
+                src_pos = quarterly_start + i*Nq
+                dest_pos = quarterly_start + (i+1)*Nq
+                F[dest_pos:dest_pos+Nq, src_pos:src_pos+Nq] = np.eye(Nq)
+                
+            # Weekly innovations enter the first position of monthly and quarterly blocks
+            F[monthly_start:monthly_start+Nm, :Nw] = np.eye(Nm, Nw)
+            F[quarterly_start:quarterly_start+Nq, :Nw] = np.eye(Nq, Nw)
+            
+            # Update system covariance for weekly blocks
             Q[:Nw, :Nw] = sigma_w
             
         except Exception as e:
-            print(f"Error in VAR posterior sampling: {e}")
-            # Continue with next iteration
+            print(f"DEBUG: Error in VAR posterior sampling: {e}")
+            # If VAR estimation fails, continue with next iteration
             continue
 
-    # Save results
-    self.Phip = Phip
+    # Save results to self
+    self.Phip = Phip  # Weekly VAR coefficients
     self.Sigmap = Sigmap
     self.nv = Ntotal
     self.Nw = Nw
@@ -706,14 +646,21 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
     self.Nq = Nq
     self.freq_ratio = freq_ratio_list
     self.select = select_list[0]  # Unified selection vector
-    self.varlist = varlist_list
+    self.varlist = varlist_list  # Unified variable list
     self.YYactsim_list = YYactsim_list
     self.XXactsim_list = XXactsim_list
     self.explosive_counter = explosive_counter
     self.valid_draws = [draw for draw in valid_draws if draw >= self.nburn/self.thining]
-    self.a_draws = a_draws  # Store full state history
-    
-    # Store the state space components for later use
+
+    # Store the smoothed states for later use
+    self.a_draws = a_draws  # Full state history [n_draws, nobs, nstate]
+
+    # Store original data for reference
+    self.input_data_W = YW
+    self.input_data_M = YM
+    self.input_data_Q = YQ
+
+    # Store the state space model components
     self.F = F
     self.c = c
     self.H_w = H_w
@@ -722,17 +669,10 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
     self.Q = Q
     self.monthly_start = monthly_start
     self.quarterly_start = quarterly_start
-    
-    # Store original data for reference
-    self.input_data_W = YW
-    self.input_data_M = YM
-    self.input_data_Q = YQ
-    
+
     # Store indexes
     self.index_list = index_list
-    
-    print(f"Estimation complete. Valid draws: {len(self.valid_draws)}, Explosive rejections: {self.explosive_counter}")
-    
+
     return None
 
 def check_state_consistency(state, Nw, Nm, Nq, monthly_start, quarterly_start, rmw, rqw):
@@ -1609,191 +1549,87 @@ def block_diag(*arrs):
 
 def extract_historical_data(self, hist_length, Nw, Nm, Nq):
     """
-    Extract and transform historical data from all three frequencies
-    
-    Parameters
-    ----------
-    hist_length : int
-        Number of historical periods to extract
-    Nw : int
-        Number of weekly variables
-    Nm : int
-        Number of monthly variables
-    Nq : int
-        Number of quarterly variables
-    
-    Returns
-    -------
-    ndarray
-        Historical data, transformed back to original scale
+    Extract and transform historical data with proper temporal aggregation
     """
     history_data = np.zeros((hist_length, Nw + Nm + Nq))
     
-    # PART 1: Extract data from the state vector for recent periods
-    recent_periods = min(hist_length, self.a_draws.shape[1]) if hasattr(self, 'a_draws') else 0
+    # Get frequency ratios
+    rmw = self.freq_ratio[1]  # Monthly to weekly ratio (4)
+    rqw = self.freq_ratio[0] * self.freq_ratio[1]  # Quarterly to weekly ratio (12)
     
-    if recent_periods > 0 and len(self.valid_draws) > 0:
-        try:
-            print(f"Using state vector for {recent_periods} recent periods")
-            
-            # Get mean states across all valid draws
-            mean_states = np.mean(self.a_draws[self.valid_draws, -recent_periods:, :], axis=0)
-            
-            # Process each time period
-            for t in range(recent_periods):
-                state_idx = t
-                result_idx = hist_length - recent_periods + t
-                
-                # Weekly variables - direct extraction
-                history_data[result_idx, :Nw] = mean_states[state_idx, :Nw]
-                
-                # Monthly variables - aggregate from latent states
-                monthly_start = self.monthly_start
-                rmw = self.freq_ratio[1]  # Monthly to weekly ratio
-                
-                for m in range(Nm):
-                    monthly_values = [mean_states[state_idx, monthly_start + w*Nm + m] for w in range(rmw)]
-                    if self.temp_agg == 'mean':
-                        history_data[result_idx, Nw+m] = np.mean(monthly_values)
-                    else:  # 'sum'
-                        history_data[result_idx, Nw+m] = np.sum(monthly_values)
-                
-                # Quarterly variables - aggregate from latent states
-                quarterly_start = self.quarterly_start
-                rqw = self.freq_ratio[0] * self.freq_ratio[1]  # Quarterly to weekly ratio
-                
-                for q in range(Nq):
-                    # Debug print to verify values
-                    if t == 0:
-                        quarterly_values = [mean_states[state_idx, quarterly_start + w*Nq + q] for w in range(rqw)]
-                        print(f"Quarterly var {q+1} latent values: mean={np.mean(quarterly_values):.4f}, "
-                              f"min={np.min(quarterly_values):.4f}, max={np.max(quarterly_values):.4f}")
-                    
-                    quarterly_values = [mean_states[state_idx, quarterly_start + w*Nq + q] for w in range(rqw)]
-                    if self.temp_agg == 'mean':
-                        history_data[result_idx, Nw+Nm+q] = np.mean(quarterly_values)
-                    else:  # 'sum'
-                        history_data[result_idx, Nw+Nm+q] = np.sum(quarterly_values)
-            
-            print(f"Extracted data from state vector for {recent_periods} periods")
-            
-        except Exception as e:
-            print(f"Error extracting from state vector: {e}")
-            import traceback
-            traceback.print_exc()
+    print(f"Extracting {hist_length} periods of historical data")
     
-    # PART 2: Fill in earlier periods using raw data
-    earlier_periods = hist_length - recent_periods
-    if earlier_periods > 0:
-        print(f"Filling {earlier_periods} earlier periods from raw data")
+    # PART 1: Use raw original data where available
+    # --------------------------------------------
+    
+    # For weekly data, use direct observations
+    if hasattr(self, 'input_data_W') and self.input_data_W is not None:
+        w_data = self.input_data_W
+        if isinstance(w_data, pd.DataFrame):
+            w_data = w_data.values
         
-        # Weekly data
-        if hasattr(self, 'input_data_W') and self.input_data_W is not None:
-            try:
-                w_data = self.input_data_W
-                if isinstance(w_data, pd.DataFrame):
-                    w_data = w_data.values
-                
-                available_w = min(earlier_periods, w_data.shape[0] - recent_periods)
-                if available_w > 0:
-                    # Calculate source indices
-                    src_start = max(0, w_data.shape[0] - recent_periods - available_w)
-                    src_end = w_data.shape[0] - recent_periods
-                    
-                    # Calculate destination indices
-                    dst_start = hist_length - recent_periods - available_w
-                    dst_end = hist_length - recent_periods
-                    
-                    # Copy weekly data
-                    history_data[dst_start:dst_end, :Nw] = w_data[src_start:src_end, :Nw]
-                    print(f"Filled {available_w} periods with weekly data")
-            except Exception as e:
-                print(f"Error filling weekly data: {e}")
-        
-        # Monthly data - map to weekly timeline
-        if hasattr(self, 'input_data_M') and self.input_data_M is not None:
-            try:
-                m_data = self.input_data_M
-                if isinstance(m_data, pd.DataFrame):
-                    m_data = m_data.values
-                
-                # Monthly-to-weekly ratio
-                rmw = self.freq_ratio[1]
-                
-                # Calculate how many months we need
-                months_needed = earlier_periods // rmw
-                available_m = min(months_needed, m_data.shape[0] - (recent_periods // rmw))
-                
-                if available_m > 0:
-                    # For each available month
-                    for i in range(available_m):
-                        # Source index in monthly data
-                        m_idx = m_data.shape[0] - (recent_periods // rmw) - available_m + i
-                        
-                        if m_idx >= 0 and m_idx < m_data.shape[0]:
-                            # Destination indices in history_data (weekly timeline)
-                            w_start = hist_length - recent_periods - (available_m - i) * rmw
-                            w_end = min(hist_length - recent_periods - (available_m - i - 1) * rmw, hist_length)
-                            
-                            # Copy the monthly values to each week in this month
-                            for w in range(w_start, w_end):
-                                if 0 <= w < hist_length:
-                                    history_data[w, Nw:Nw+Nm] = m_data[m_idx]
-                    
-                    print(f"Filled data from {available_m} months")
-            except Exception as e:
-                print(f"Error filling monthly data: {e}")
-                
-        # Quarterly data - map to weekly timeline
-        if hasattr(self, 'input_data_Q') and self.input_data_Q is not None:
-            try:
-                q_data = self.input_data_Q
-                if isinstance(q_data, pd.DataFrame):
-                    q_data = q_data.values
-                
-                # Print quarterly data dimensions for debugging
-                print(f"Quarterly data shape: {q_data.shape}")
-                
-                # Quarterly-to-weekly ratio
-                rqw = self.freq_ratio[0] * self.freq_ratio[1]
-                
-                # Calculate how many quarters we need
-                quarters_needed = earlier_periods // rqw
-                available_q = min(quarters_needed, q_data.shape[0] - (recent_periods // rqw))
-                
-                print(f"Need {quarters_needed} quarters, have {available_q} available")
-                
-                if available_q > 0:
-                    # For each available quarter
-                    for i in range(available_q):
-                        # Source index in quarterly data
-                        q_idx = q_data.shape[0] - (recent_periods // rqw) - available_q + i
-                        
-                        if q_idx >= 0 and q_idx < q_data.shape[0]:
-                            # Destination indices in history_data (weekly timeline)
-                            w_start = hist_length - recent_periods - (available_q - i) * rqw
-                            w_end = min(hist_length - recent_periods - (available_q - i - 1) * rqw, hist_length)
-                            
-                            # Debug print
-                            print(f"Copying Q data from q_idx={q_idx} to weeks {w_start}-{w_end}")
-                            
-                            # Copy the quarterly values to each week in this quarter
-                            for w in range(w_start, w_end):
-                                if 0 <= w < hist_length:
-                                    # Ensure we only attempt to map valid quarterly variables
-                                    if q_data.shape[1] >= Nq:
-                                        # Directly map quarterly values
-                                        history_data[w, Nw+Nm:Nw+Nm+Nq] = q_data[q_idx, :Nq]
-                                    else:
-                                        print(f"Warning: q_data shape {q_data.shape} doesn't match expected Nq={Nq}")
-                    
-                    print(f"Filled data from {available_q} quarters")
-            except Exception as e:
-                print(f"Error filling quarterly data: {e}")
-                import traceback
-                traceback.print_exc()
+        # Only fill as many periods as we have data
+        avail_weeks = min(hist_length, w_data.shape[0])
+        if avail_weeks > 0:
+            # Map to the end of our history period
+            w_start = max(0, w_data.shape[0] - avail_weeks)
+            h_start = max(0, hist_length - avail_weeks)
+            
+            # Fill in weekly data
+            history_data[h_start:, :Nw] = w_data[w_start:, :Nw]
+            print(f"Filled {avail_weeks} weeks with direct observations")
     
-    # PART 3: Apply transformations based on variable types
+    # For monthly data
+    if hasattr(self, 'input_data_M') and self.input_data_M is not None:
+        m_data = self.input_data_M
+        if isinstance(m_data, pd.DataFrame):
+            m_data = m_data.values
+        
+        # Map months to weeks - each month maps to 4 weeks (rmw)
+        m_periods = m_data.shape[0]
+        
+        for m_idx in range(m_periods):
+            # Map this month to the corresponding weeks in history_data
+            w_start = max(0, hist_length - (m_periods - m_idx) * rmw)
+            w_end = min(hist_length, hist_length - (m_periods - m_idx - 1) * rmw)
+            
+            # If we have weeks that correspond to this month
+            if w_start < w_end:
+                # Fill all weeks in this month with same monthly values
+                for w in range(w_start, w_end):
+                    history_data[w, Nw:Nw+Nm] = m_data[m_idx, :Nm]
+        
+        print(f"Mapped {m_periods} months to weeks")
+    
+    # For quarterly data
+    if hasattr(self, 'input_data_Q') and self.input_data_Q is not None:
+        q_data = self.input_data_Q
+        if isinstance(q_data, pd.DataFrame):
+            q_data = q_data.values
+        
+        # Map quarters to weeks - each quarter maps to 12 weeks (rqw)
+        q_periods = q_data.shape[0]
+        
+        for q_idx in range(q_periods):
+            # Map this quarter to the corresponding weeks in history_data
+            w_start = max(0, hist_length - (q_periods - q_idx) * rqw)
+            w_end = min(hist_length, hist_length - (q_periods - q_idx - 1) * rqw)
+            
+            # If we have weeks that correspond to this quarter
+            if w_start < w_end:
+                # Fill all weeks in this quarter with same quarterly values
+                for w in range(w_start, w_end):
+                    history_data[w, Nw+Nm:Nw+Nm+Nq] = q_data[q_idx, :Nq]
+        
+        print(f"Mapped {q_periods} quarters to weeks")
+    
+    # PART 2: Apply transformations based on variable types
+    # --------------------------------------------------
+    
+    # Copy data for transformation
+    history_trans = history_data.copy()
+    
+    # Apply transformations based on variable type
     for i in range(Nw + Nm + Nq):
         if i < len(self.select):
             # Skip zeros to avoid transforming empty values
@@ -1801,17 +1637,16 @@ def extract_historical_data(self, hist_length, Nw, Nm, Nq):
             
             if np.any(mask):  # Only transform if there are non-zero values
                 if self.select[i] == 1:  # Growth rate
-                    history_data[mask, i] = 100 * history_data[mask, i]
+                    history_trans[mask, i] = 100 * history_data[mask, i]
                 else:  # Level
-                    history_data[mask, i] = np.exp(history_data[mask, i])
+                    history_trans[mask, i] = np.exp(history_data[mask, i])
     
-    # PART 4: Final verification
-    # Check if we have any completely empty columns
-    empty_cols = np.where(np.all(history_data == 0, axis=0))[0]
-    if empty_cols.size > 0:
-        for col in empty_cols:
-            freq_type = "Weekly" if col < Nw else "Monthly" if col < Nw+Nm else "Quarterly"
-            freq_idx = col - (0 if col < Nw else Nw if col < Nw+Nm else Nw+Nm)
-            print(f"Warning: {freq_type} variable {freq_idx+1} has no historical data")
+    # Verify data has been filled correctly
+    for var_type, start_idx, count in [("Weekly", 0, Nw), 
+                                     ("Monthly", Nw, Nm), 
+                                     ("Quarterly", Nw+Nm, Nq)]:
+        non_zero = np.count_nonzero(history_trans[:, start_idx:start_idx+count])
+        total = hist_length * count
+        print(f"{var_type} variables: {non_zero}/{total} values filled ({non_zero/total*100:.1f}%)")
     
-    return history_data
+    return history_trans

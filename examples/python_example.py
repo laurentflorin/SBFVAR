@@ -50,7 +50,6 @@ model.fit(mufbvar_data, hyp = hyp, var_of_interest = None,  temp_agg = 'mean')
 
 # Create forecasts in highest frequency
 model.forecast(H)
-
 model.to_excel("test.xlsx")
 # Aggregate
 model.aggregate(frequency = "Q")
