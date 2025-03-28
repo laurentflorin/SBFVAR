@@ -35,7 +35,7 @@ class multifrequency_var:
         self.thining = thining
         
     # Imported methods
-    from ._estimation import fit, forecast, aggregate, replace_forecasts_with_history, prepare_history_df, replace_with_history, aggregate_df, filter_to_variables_of_interest, block_diag, extract_historical_data 
+    from ._estimation import fit, forecast, aggregate,debug_latent_states, get_weekly_quarterly_latent, get_weekly_monthly_latent, _create_forecast_dates, debug_quarterly_extraction, replace_forecasts_with_history, prepare_history_df, replace_with_history, aggregate_df, filter_to_variables_of_interest, block_diag, extract_historical_data 
     from ._save import to_excel, save
 
     
