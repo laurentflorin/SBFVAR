@@ -251,7 +251,7 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
     # VAR block: moderate process noise
     Q[:Ntotal, :Ntotal] = 1e-4 * np.eye(Ntotal)
     
-    # Monthly latent states: lower process noise
+    # Monthly latent states: significantly lower process noise
     for m in range(Nm):
         for w in range(rmw):
             idx = monthly_start + w*Nm + m
@@ -265,7 +265,10 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
     
     # Initialize state vector
     a_t = np.zeros(nstate)
-    
+    P_t = np.eye(nstate) * 1e-3  # Initialize P_t here first
+
+    # Higher uncertainty for VAR block
+    P_t[:Ntotal, :Ntotal] = np.eye(Ntotal) * 1e-2
     # Initialize weekly variables with available data
     if YW.shape[0] > 0:
         a_t[:Nw] = YW[0, :Nw]
@@ -279,35 +282,30 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
     if YQ.shape[0] > 0:
         a_t[Nw+Nm:Ntotal] = YQ[0, :]
     
-    # Initialize monthly latent states with weekly pattern
+    # IMPROVED INITIALIZATION FOR LATENT STATES
+    # Initialize monthly latent states with reasonable patterns
     if YM.shape[0] > 0:
         for m in range(Nm):
             m_value = YM[0, m]
-            # Initialize with slight weekly pattern (simulated weekly seasonality)
-            pattern = [1.0 - 0.05, 1.0, 1.0 + 0.05, 1.0 - 0.02]  # Small weekly pattern
+            # Create a realistic weekly pattern around the observed value
             for w in range(rmw):
-                a_t[monthly_start + w*Nm + m] = m_value * pattern[w]
-            print(f"Monthly var {m+1} initialized with weekly pattern: {[m_value * p for p in pattern]}")
+                # Small variations (±5%)
+                a_t[monthly_start + w*Nm + m] = m_value * (0.95 + 0.1 * (w / (rmw-1)))
+                # Lower initial uncertainty
+                P_t[monthly_start + w*Nm + m, monthly_start + w*Nm + m] = 0.01
+            print(f"Monthly var {m+1} initialized with more stable weekly pattern")
     
-    # Initialize quarterly latent states with weekly pattern
+    # Initialize quarterly latent states with reasonable patterns
     if YQ.shape[0] > 0:
         for q in range(Nq):
             q_value = YQ[0, q]
-            # Smoother weekly pattern for quarterly variables
-            quarter_pattern = np.ones(rqw)
-            # Add a slight sine wave pattern
+            # Create a realistic weekly pattern for quarterly data
             for w in range(rqw):
-                quarter_pattern[w] = 1.0 + 0.05 * np.sin(w * np.pi / 6)
-            
-            for w in range(rqw):
-                a_t[quarterly_start + w*Nq + q] = q_value * quarter_pattern[w]
-            print(f"Quarterly var {q+1} initialized with weekly pattern")
-    
-    # Initial state uncertainty
-    P_t = np.eye(nstate) * 1e-3
-    
-    # Higher uncertainty for VAR block
-    P_t[:Ntotal, :Ntotal] = np.eye(Ntotal) * 1e-2
+                # Gentle seasonal pattern
+                a_t[quarterly_start + w*Nq + q] = q_value * (0.9 + 0.2 * np.sin(np.pi * w / rqw))
+                # Lower initial uncertainty
+                P_t[quarterly_start + w*Nq + q, quarterly_start + w*Nq + q] = 0.01
+            print(f"Quarterly var {q+1} initialized with more stable weekly pattern")
     
     # PREPARE KALMAN FILTER DATA
     # -------------------------
@@ -506,99 +504,212 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
                     if j == 0 and t < 10:
                         print(f"Warning: Using diagonal regularization for P_t at t={t}")
                 
-                # POST-UPDATE CONSTRAINT ENFORCEMENT - MORE AGGRESSIVE
+                # ENHANCED MEASUREMENT EQUATION ENFORCEMENT
                 # ------------------------------------------------
                 
-                # Always enforce constraints for month/quarter periods
-                # Month-end constraint enforcement
+                # Month-end constraint enforcement using the measurement equation
                 if is_month_end and m_idx >= 0 and m_idx < YM.shape[0]:
                     for m in range(Nm):
-                        # First, align VAR block variable with target
+                        # Get observed monthly value
                         m_obs = YM[m_idx, m]
                         var_block_idx = Nw + m
                         
-                        # Strong direct alignment to observation
-                        a_t[var_block_idx] = m_obs
+                        # 1. First let's set the VAR block variable to match observation with high precision
+                        # This is done through a "phantom" observation using the Kalman update
+                        H_phantom = np.zeros((1, nstate))
+                        H_phantom[0, var_block_idx] = 1.0
+                        y_phantom = np.array([m_obs])
+                        R_phantom = np.array([[1e-12]])  # Very low measurement noise
                         
-                        # Now enforce pattern-preserving aggregation constraint on latent states
-                        m_values = np.zeros(rmw)
+                        # Kalman gain for this phantom observation
+                        S_phantom = H_phantom @ P_t @ H_phantom.T + R_phantom
+                        K_phantom = P_t @ H_phantom.T @ np.linalg.inv(S_phantom)
+                        
+                        # Apply update
+                        a_t = a_t + K_phantom @ (y_phantom - H_phantom @ a_t)
+                        P_t = P_t - K_phantom @ H_phantom @ P_t
+                        
+                        # 2. Now enforce the temporal aggregation constraint with high precision
+                        # Build measurement matrix for aggregation
+                        H_agg = np.zeros((1, nstate))
                         for w in range(rmw):
-                            m_values[w] = a_t[monthly_start + w*Nm + m]
+                            state_idx = monthly_start + w*Nm + m
+                            if self.temp_agg == 'mean':
+                                H_agg[0, state_idx] = 1.0/rmw
+                            else:  # 'sum'
+                                H_agg[0, state_idx] = 1.0
                         
-                        # Calculate aggregate and ensure it matches observed value
+                        # Use phantom observation for aggregation
+                        y_agg = np.array([m_obs])
+                        R_agg = np.array([[1e-12]])  # Very low measurement noise
+                        
+                        # Kalman gain for aggregation
+                        S_agg = H_agg @ P_t @ H_agg.T + R_agg
+                        K_agg = P_t @ H_agg.T @ np.linalg.inv(S_agg)
+                        
+                        # Apply update
+                        a_t = a_t + K_agg @ (y_agg - H_agg @ a_t)
+                        P_t = P_t - K_agg @ H_agg @ P_t
+                        
+                        # 3. Enforce first-week alignment with VAR block
+                        H_align = np.zeros((1, nstate))
+                        H_align[0, var_block_idx] = 1.0  # VAR block
+                        H_align[0, monthly_start + m] = -1.0  # First week
+                        
+                        y_align = np.array([0.0])  # Zero difference
+                        R_align = np.array([[1e-12]])
+                        
+                        # Kalman gain for alignment
+                        S_align = H_align @ P_t @ H_align.T + R_align
+                        K_align = P_t @ H_align.T @ np.linalg.inv(S_align)
+                        
+                        # Apply update
+                        a_t = a_t + K_align @ (y_align - H_align @ a_t)
+                        P_t = P_t - K_align @ H_align @ P_t
+                        
+                        # 4. Apply value clipping afterward to prevent extreme values
+                        threshold = 3.0
+                        for w in range(rmw):
+                            state_idx = monthly_start + w*Nm + m
+                            if np.isnan(a_t[state_idx]) or np.isinf(a_t[state_idx]) or abs(a_t[state_idx]) > threshold:
+                                # Use a more conservative value but preserve some variability
+                                pattern_factor = 0.95 + 0.1 * (w / (rmw-1))
+                                a_t[state_idx] = np.sign(a_t[state_idx]) * min(threshold, abs(m_obs) * pattern_factor)
+                        
+                        # 5. Verify the constraint is reasonably enforced (for debugging)
                         if self.temp_agg == 'mean':
-                            agg_value = np.mean(m_values)
-                            adjustment = m_obs - agg_value
-                            for w in range(rmw):
-                                a_t[monthly_start + w*Nm + m] += adjustment
-                        else:  # 'sum'
-                            agg_value = np.sum(m_values)
-                            scale_factor = m_obs / (agg_value + 1e-10)  # Avoid division by zero
-                            for w in range(rmw):
-                                a_t[monthly_start + w*Nm + m] *= scale_factor
+                            agg_value = np.mean([a_t[monthly_start + w*Nm + m] for w in range(rmw)])
+                        else:
+                            agg_value = np.sum([a_t[monthly_start + w*Nm + m] for w in range(rmw)])
                         
-                        # For debugging
+                        # Print verification for first few draws
                         if j == 0 and t < 10:
-                            print(f"  Month {m_idx+1}, Var {m+1}: Adjusted from {agg_value:.8f} to {m_obs:.8f}")
+                            error = abs(agg_value - m_obs)
+                            print(f"  Month {m_idx+1}, Var {m+1}: Target={m_obs:.8f}, Achieved={agg_value:.8f}, Error={error:.10f}")
                 
-                # Quarter-end constraint enforcement
+                # Quarter-end constraint enforcement using measurement equation - similar approach
                 if is_quarter_end and q_idx >= 0 and q_idx < YQ.shape[0]:
                     for q in range(Nq):
-                        # First, align VAR block variable with target
+                        # Get observed quarterly value
                         q_obs = YQ[q_idx, q]
                         var_block_idx = Nw + Nm + q
                         
-                        # Strong direct alignment to observation
-                        a_t[var_block_idx] = q_obs
+                        # 1. Set VAR block variable with high precision
+                        H_phantom = np.zeros((1, nstate))
+                        H_phantom[0, var_block_idx] = 1.0
+                        y_phantom = np.array([q_obs])
+                        R_phantom = np.array([[1e-12]])
                         
-                        # Now enforce pattern-preserving aggregation constraint on latent states
-                        q_values = np.zeros(rqw)
+                        # Kalman gain for phantom observation
+                        S_phantom = H_phantom @ P_t @ H_phantom.T + R_phantom
+                        K_phantom = P_t @ H_phantom.T @ np.linalg.inv(S_phantom)
+                        
+                        # Apply update
+                        a_t = a_t + K_phantom @ (y_phantom - H_phantom @ a_t)
+                        P_t = P_t - K_phantom @ H_phantom @ P_t
+                        
+                        # 2. Enforce temporal aggregation constraint
+                        H_agg = np.zeros((1, nstate))
                         for w in range(rqw):
-                            q_values[w] = a_t[quarterly_start + w*Nq + q]
+                            state_idx = quarterly_start + w*Nq + q
+                            if self.temp_agg == 'mean':
+                                H_agg[0, state_idx] = 1.0/rqw
+                            else:  # 'sum'
+                                H_agg[0, state_idx] = 1.0
                         
-                        # Calculate aggregate and ensure it matches observed value
+                        # Use phantom observation
+                        y_agg = np.array([q_obs])
+                        R_agg = np.array([[1e-12]])
+                        
+                        # Kalman gain for aggregation
+                        S_agg = H_agg @ P_t @ H_agg.T + R_agg
+                        K_agg = P_t @ H_agg.T @ np.linalg.inv(S_agg)
+                        
+                        # Apply update
+                        a_t = a_t + K_agg @ (y_agg - H_agg @ a_t)
+                        P_t = P_t - K_agg @ H_agg @ P_t
+                        
+                        # 3. Enforce first-week alignment with VAR block
+                        H_align = np.zeros((1, nstate))
+                        H_align[0, var_block_idx] = 1.0  # VAR block
+                        H_align[0, quarterly_start + q] = -1.0  # First week
+                        
+                        y_align = np.array([0.0])  # Zero difference
+                        R_align = np.array([[1e-12]])
+                        
+                        # Kalman gain for alignment
+                        S_align = H_align @ P_t @ H_align.T + R_align
+                        K_align = P_t @ H_align.T @ np.linalg.inv(S_align)
+                        
+                        # Apply update
+                        a_t = a_t + K_align @ (y_align - H_align @ a_t)
+                        P_t = P_t - K_align @ H_align @ P_t
+                        
+                        # 4. Apply value clipping to prevent extremes
+                        threshold = 3.0
+                        for w in range(rqw):
+                            state_idx = quarterly_start + w*Nq + q
+                            if np.isnan(a_t[state_idx]) or np.isinf(a_t[state_idx]) or abs(a_t[state_idx]) > threshold:
+                                # Use conservative value but preserve some variability
+                                pattern_factor = 0.95 + 0.1 * np.sin(np.pi * w / rqw)
+                                a_t[state_idx] = np.sign(a_t[state_idx]) * min(threshold, abs(q_obs) * pattern_factor)
+                        
+                        # 5. Verify constraint (for debugging)
                         if self.temp_agg == 'mean':
-                            agg_value = np.mean(q_values)
-                            adjustment = q_obs - agg_value
-                            for w in range(rqw):
-                                a_t[quarterly_start + w*Nq + q] += adjustment
-                        else:  # 'sum'
-                            agg_value = np.sum(q_values)
-                            scale_factor = q_obs / (agg_value + 1e-10)  # Avoid division by zero
-                            for w in range(rqw):
-                                a_t[quarterly_start + w*Nq + q] *= scale_factor
+                            agg_value = np.mean([a_t[quarterly_start + w*Nq + q] for w in range(rqw)])
+                        else:
+                            agg_value = np.sum([a_t[quarterly_start + w*Nq + q] for w in range(rqw)])
                         
-                        # For debugging
+                        # Print verification for first few draws
                         if j == 0 and t < 10:
-                            print(f"  Quarter {q_idx+1}, Var {q+1}: Adjusted from {agg_value:.8f} to {q_obs:.8f}")
+                            error = abs(agg_value - q_obs)
+                            print(f"  Quarter {q_idx+1}, Var {q+1}: Target={q_obs:.8f}, Achieved={agg_value:.8f}, Error={error:.10f}")
                 
-                # Also update the VAR-latent alignment more frequently
-                # Force first week of each month to match VAR block
-                if (w_idx % rmw == 0) and (w_idx // rmw) < YM.shape[0]:
-                    m_idx_curr = w_idx // rmw
-                    for m in range(Nm):
-                        m_block_val = a_t[Nw + m]
-                        a_t[monthly_start + m] = m_block_val
-                        if j == 0 and t < 10:
-                            print(f"  Enforced first-week alignment for monthly var {m+1}: {m_block_val:.8f}")
+                # ENHANCED VALUE CLAMPING
+                # Apply global state value clipping
+                for i in range(nstate):
+                    # More aggressive clipping for latent states
+                    if i >= monthly_start:
+                        if np.isnan(a_t[i]) or np.isinf(a_t[i]):
+                            a_t[i] = 0.0  # Reset to zero if NaN or Inf
+                        elif abs(a_t[i]) > 3.0:  # Stricter threshold
+                            a_t[i] = np.sign(a_t[i]) * 3.0  # Clip to ±3.0
+                            
+                    # Standard clipping for VAR block
+                    else:
+                        if np.isnan(a_t[i]) or np.isinf(a_t[i]):
+                            a_t[i] = 0.0
+                        elif abs(a_t[i]) > 5.0:
+                            a_t[i] = np.sign(a_t[i]) * 5.0
                 
-                # Force first week of each quarter to match VAR block
-                if (w_idx % rqw == 0) and (w_idx // rqw) < YQ.shape[0]:
-                    q_idx_curr = w_idx // rqw
-                    for q in range(Nq):
-                        q_block_val = a_t[Nw + Nm + q]
-                        a_t[quarterly_start + q] = q_block_val
-                        if j == 0 and t < 10:
-                            print(f"  Enforced first-week alignment for quarterly var {q+1}: {q_block_val:.8f}")
-                
-                # NEW: Add value clamping to prevent numerical explosions
-                threshold = 5.0  # Reasonable threshold for economic variables
-                for i in range(len(a_t)):
-                    if np.isnan(a_t[i]) or np.isinf(a_t[i]) or abs(a_t[i]) > threshold:
-                        # Replace with reasonable value
-                        a_t[i] = threshold * np.sign(a_t[i]) if a_t[i] != 0 else 0.001
-                        if j == 0 and t < 10:
-                            print(f"  Clamped extreme value at index {i}")
+                # ADDITIONAL GLOBAL STATE MONITORING
+                # Periodically scan and reset problematic states
+                if t % 10 == 0:
+                    # Check for any remaining extreme values or instabilities
+                    for i in range(nstate):
+                        if abs(a_t[i]) > 2.0 and i >= monthly_start:
+                            # For latent states, set to conservative default if still extreme
+                            if i < quarterly_start:  # Monthly latent
+                                m = (i - monthly_start) % Nm
+                                w = (i - monthly_start) // Nm
+                                if m_idx >= 0 and m_idx < YM.shape[0]:
+                                    # Set to monthly value with small deviation
+                                    m_val = YM[m_idx, m]
+                                    a_t[i] = m_val * (0.95 + 0.1 * w / rmw)
+                                else:
+                                    a_t[i] = 0.5  # Conservative default
+                            else:  # Quarterly latent
+                                q = (i - quarterly_start) % Nq
+                                w = (i - quarterly_start) // Nq
+                                if q_idx >= 0 and q_idx < YQ.shape[0]:
+                                    # Set to quarterly value with small deviation
+                                    q_val = YQ[q_idx, q]
+                                    a_t[i] = q_val * (0.95 + 0.1 * w / rqw)
+                                else:
+                                    a_t[i] = 0.5
+                                
+                            # Reduce uncertainty for reset states
+                            P_t[i, i] = 1e-6
                 
             except np.linalg.LinAlgError as e:
                 if j == 0:
@@ -647,60 +758,111 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
             Pchol = cholcovOrEigendecomp(P_smooth[-1])
             a_draw = a_smooth[-1] + Pchol @ np.random.standard_normal(nstate)
             
-            # Apply value clamping to the draw
-            threshold = 5.0
+            # Apply value clamping to the draw - more aggressive for latent states
+            threshold_var = 5.0  # VAR block
+            threshold_latent = 3.0  # Latent states
             for i in range(len(a_draw)):
-                if np.isnan(a_draw[i]) or np.isinf(a_draw[i]) or abs(a_draw[i]) > threshold:
-                    a_draw[i] = threshold * np.sign(a_draw[i]) if a_draw[i] != 0 else 0.001
+                if np.isnan(a_draw[i]) or np.isinf(a_draw[i]):
+                    a_draw[i] = a_smooth[-1][i]  # Fall back to smoothed value
+                elif i >= monthly_start:  # Latent states
+                    if abs(a_draw[i]) > threshold_latent:
+                        a_draw[i] = np.sign(a_draw[i]) * threshold_latent
+                else:  # VAR block
+                    if abs(a_draw[i]) > threshold_var:
+                        a_draw[i] = np.sign(a_draw[i]) * threshold_var
             
             # Final check for aggregate constraint on last state
             last_week_idx = T0 + nobs - 1
             last_month_idx = last_week_idx // rmw
             last_quarter_idx = last_week_idx // rqw
             
-            if last_month_idx < YM.shape[0]:
+            # Check if this is month-end
+            is_month_end = ((last_week_idx + 1) % rmw == 0)
+            if is_month_end and last_month_idx < YM.shape[0]:
                 for m in range(Nm):
-                    # Check monthly aggregation for last month
-                    m_values = np.zeros(rmw)
-                    for w in range(rmw):
-                        m_values[w] = a_draw[monthly_start + w*Nm + m]
+                    # First enforce VAR block to match observed value
+                    var_block_idx = Nw + m
+                    m_obs = YM[last_month_idx, m]
+                    a_draw[var_block_idx] = m_obs
                     
+                    # Now enforce latent state aggregation using Kalman update approach
+                    H_agg = np.zeros((1, nstate))
+                    for w in range(rmw):
+                        state_idx = monthly_start + w*Nm + m
+                        if self.temp_agg == 'mean':
+                            H_agg[0, state_idx] = 1.0/rmw
+                        else:  # 'sum'
+                            H_agg[0, state_idx] = 1.0
+                    
+                    # Check current aggregation
+                    m_values = np.array([a_draw[monthly_start + w*Nm + m] for w in range(rmw)])
                     if self.temp_agg == 'mean':
                         agg_value = np.mean(m_values)
-                        target = YM[last_month_idx, m]
-                        adjustment = target - agg_value
-                        if abs(adjustment) > 1e-8:
-                            for w in range(rmw):
-                                a_draw[monthly_start + w*Nm + m] += adjustment
                     else:
                         agg_value = np.sum(m_values)
-                        target = YM[last_month_idx, m]
-                        if abs(agg_value - target) > 1e-8 * abs(target):
-                            scale_factor = target / (agg_value + 1e-10)
-                            for w in range(rmw):
-                                a_draw[monthly_start + w*Nm + m] *= scale_factor
-            
-            if last_quarter_idx < YQ.shape[0]:
-                for q in range(Nq):
-                    # Check quarterly aggregation for last quarter
-                    q_values = np.zeros(rqw)
-                    for w in range(rqw):
-                        q_values[w] = a_draw[quarterly_start + w*Nq + q]
                     
+                    # If aggregation is off by more than a small tolerance, adjust the pattern
+                    if abs(agg_value - m_obs) > 1e-6:
+                        if self.temp_agg == 'mean':
+                            # Shift pattern to match target mean while preserving shape
+                            adjustment = m_obs - agg_value
+                            for w in range(rmw):
+                                a_draw[monthly_start + w*Nm + m] += adjustment
+                        else:  # 'sum'
+                            if abs(agg_value) > 1e-10:  # Avoid division by zero
+                                # Scale pattern to match target sum while preserving shape
+                                scale = m_obs / agg_value
+                                scale = np.clip(scale, 0.5, 2.0)  # Limit scale factor
+                                for w in range(rmw):
+                                    a_draw[monthly_start + w*Nm + m] *= scale
+                            else:
+                                # If near zero, distribute evenly
+                                for w in range(rmw):
+                                    a_draw[monthly_start + w*Nm + m] = m_obs / rmw
+            
+            # Check if this is quarter-end
+            is_quarter_end = ((last_week_idx + 1) % rqw == 0)
+            if is_quarter_end and last_quarter_idx < YQ.shape[0]:
+                for q in range(Nq):
+                    # First enforce VAR block to match observed value
+                    var_block_idx = Nw + Nm + q
+                    q_obs = YQ[last_quarter_idx, q]
+                    a_draw[var_block_idx] = q_obs
+                    
+                    # Now enforce latent state aggregation using Kalman update approach
+                    H_agg = np.zeros((1, nstate))
+                    for w in range(rqw):
+                        state_idx = quarterly_start + w*Nq + q
+                        if self.temp_agg == 'mean':
+                            H_agg[0, state_idx] = 1.0/rqw
+                        else:  # 'sum'
+                            H_agg[0, state_idx] = 1.0
+                    
+                    # Check current aggregation
+                    q_values = np.array([a_draw[quarterly_start + w*Nq + q] for w in range(rqw)])
                     if self.temp_agg == 'mean':
                         agg_value = np.mean(q_values)
-                        target = YQ[last_quarter_idx, q]
-                        adjustment = target - agg_value
-                        if abs(adjustment) > 1e-8:
-                            for w in range(rqw):
-                                a_draw[quarterly_start + w*Nq + q] += adjustment
                     else:
                         agg_value = np.sum(q_values)
-                        target = YQ[last_quarter_idx, q]
-                        if abs(agg_value - target) > 1e-8 * abs(target):
-                            scale_factor = target / (agg_value + 1e-10)
+                    
+                    # If aggregation is off by more than a small tolerance, adjust the pattern
+                    if abs(agg_value - q_obs) > 1e-6:
+                        if self.temp_agg == 'mean':
+                            # Shift pattern to match target mean while preserving shape
+                            adjustment = q_obs - agg_value
                             for w in range(rqw):
-                                a_draw[quarterly_start + w*Nq + q] *= scale_factor
+                                a_draw[quarterly_start + w*Nq + q] += adjustment
+                        else:  # 'sum'
+                            if abs(agg_value) > 1e-10:  # Avoid division by zero
+                                # Scale pattern to match target sum while preserving shape
+                                scale = q_obs / agg_value
+                                scale = np.clip(scale, 0.75, 1.5)  # Tighter limits for quarterly
+                                for w in range(rqw):
+                                    a_draw[quarterly_start + w*Nq + q] *= scale
+                            else:
+                                # If near zero, distribute evenly
+                                for w in range(rqw):
+                                    a_draw[quarterly_start + w*Nq + q] = q_obs / rqw
             
             # Store the draw
             a_draws[j, -1] = a_draw
@@ -754,11 +916,18 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
                     Pchol = cholcovOrEigendecomp(P_smooth_t)
                     a_draw = a_smooth_t + Pchol @ np.random.standard_normal(nstate)
                     
-                    # Apply value clamping to the draw
-                    threshold = 5.0
+                    # Apply value clamping to the draw - more aggressive for latent states
+                    threshold_var = 5.0  # VAR block
+                    threshold_latent = 3.0  # Latent states
                     for i in range(len(a_draw)):
-                        if np.isnan(a_draw[i]) or np.isinf(a_draw[i]) or abs(a_draw[i]) > threshold:
-                            a_draw[i] = threshold * np.sign(a_draw[i]) if a_draw[i] != 0 else 0.001
+                        if np.isnan(a_draw[i]) or np.isinf(a_draw[i]):
+                            a_draw[i] = a_smooth_t[i]  # Fall back to smoothed value
+                        elif i >= monthly_start:  # Latent states
+                            if abs(a_draw[i]) > threshold_latent:
+                                a_draw[i] = np.sign(a_draw[i]) * threshold_latent
+                        else:  # VAR block
+                            if abs(a_draw[i]) > threshold_var:
+                                a_draw[i] = np.sign(a_draw[i]) * threshold_var
                     
                     # Check and enforce constraints for this period
                     w_idx = T0 + t
@@ -769,55 +938,73 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
                     is_month_end = ((w_idx + 1) % rmw == 0)
                     if is_month_end and m_idx < YM.shape[0]:
                         for m in range(Nm):
-                            # Get monthly latent states
-                            m_values = np.zeros(rmw)
-                            for w in range(rmw):
-                                m_values[w] = a_draw[monthly_start + w*Nm + m]
+                            # First enforce VAR block to match observed value
+                            var_block_idx = Nw + m
+                            m_obs = YM[m_idx, m]
+                            a_draw[var_block_idx] = m_obs
                             
-                            # Check aggregation
+                            # Now enforce latent state aggregation using Kalman update approach
+                            # Check current aggregation
+                            m_values = np.array([a_draw[monthly_start + w*Nm + m] for w in range(rmw)])
                             if self.temp_agg == 'mean':
                                 agg_value = np.mean(m_values)
-                                target = YM[m_idx, m]
-                                adjustment = target - agg_value
-                                # Only adjust if error is significant
-                                if abs(adjustment) > 1e-8:
-                                    for w in range(rmw):
-                                        a_draw[monthly_start + w*Nm + m] += adjustment
                             else:
                                 agg_value = np.sum(m_values)
-                                target = YM[m_idx, m]
-                                # Only adjust if error is significant
-                                if abs(agg_value - target) > 1e-8 * abs(target):
-                                    scale_factor = target / (agg_value + 1e-10)
+                            
+                            # If aggregation is off by more than a small tolerance, adjust the pattern
+                            if abs(agg_value - m_obs) > 1e-6:
+                                if self.temp_agg == 'mean':
+                                    # Shift pattern to match target mean while preserving shape
+                                    adjustment = m_obs - agg_value
                                     for w in range(rmw):
-                                        a_draw[monthly_start + w*Nm + m] *= scale_factor
+                                        a_draw[monthly_start + w*Nm + m] += adjustment
+                                else:  # 'sum'
+                                    if abs(agg_value) > 1e-10:  # Avoid division by zero
+                                        # Scale pattern to match target sum while preserving shape
+                                        scale = m_obs / agg_value
+                                        scale = np.clip(scale, 0.5, 2.0)  # Limit scale factor
+                                        for w in range(rmw):
+                                            a_draw[monthly_start + w*Nm + m] *= scale
+                                    else:
+                                        # If near zero, distribute evenly
+                                        for w in range(rmw):
+                                            a_draw[monthly_start + w*Nm + m] = m_obs / rmw
                     
                     # Check if this is quarter-end
                     is_quarter_end = ((w_idx + 1) % rqw == 0)
                     if is_quarter_end and q_idx < YQ.shape[0]:
                         for q in range(Nq):
-                            # Get quarterly latent states
-                            q_values = np.zeros(rqw)
-                            for w in range(rqw):
-                                q_values[w] = a_draw[quarterly_start + w*Nq + q]
+                            # First enforce VAR block to match observed value
+                            var_block_idx = Nw + Nm + q
+                            q_obs = YQ[q_idx, q]
+                            a_draw[var_block_idx] = q_obs
                             
-                            # Check aggregation
+                            # Now enforce latent state aggregation using Kalman update approach
+                            # Check current aggregation
+                            q_values = np.array([a_draw[quarterly_start + w*Nq + q] for w in range(rqw)])
                             if self.temp_agg == 'mean':
                                 agg_value = np.mean(q_values)
-                                target = YQ[q_idx, q]
-                                adjustment = target - agg_value
-                                # Only adjust if error is significant
-                                if abs(adjustment) > 1e-8:
-                                    for w in range(rqw):
-                                        a_draw[quarterly_start + w*Nq + q] += adjustment
                             else:
                                 agg_value = np.sum(q_values)
-                                target = YQ[q_idx, q]
-                                # Only adjust if error is significant
-                                if abs(agg_value - target) > 1e-8 * abs(target):
-                                    scale_factor = target / (agg_value + 1e-10)
+                            
+                            # If aggregation is off by more than a small tolerance, adjust the pattern
+                            if abs(agg_value - q_obs) > 1e-6:
+                                if self.temp_agg == 'mean':
+                                    # Shift pattern to match target mean while preserving shape
+                                    adjustment = q_obs - agg_value
                                     for w in range(rqw):
-                                        a_draw[quarterly_start + w*Nq + q] *= scale_factor
+                                        a_draw[quarterly_start + w*Nq + q] += adjustment
+                                else:  # 'sum'
+                                    if abs(agg_value) > 1e-10:  # Avoid division by zero
+                                        # Scale pattern to match target sum while preserving shape
+                                        scale = q_obs / agg_value
+                                        scale = np.clip(scale, 0.75, 1.5)  # Tighter limits for quarterly
+                                        for w in range(rqw):
+                                            a_draw[quarterly_start + w*Nq + q] *= scale
+                                    else:
+                                        # If near zero, distribute evenly
+                                        for w in range(rqw):
+                                            a_draw[quarterly_start + w*Nq + q] = q_obs / rqw
                     
                     # Also enforce VAR-to-latent alignment for first week of each period
                     if (w_idx % rmw == 0) and (w_idx // rmw) < YM.shape[0]:
@@ -941,13 +1128,6 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
         
         # Quarterly variables (from state vector)
         combined_smooth[:, Nw+Nm:Ntotal] = a_draws[j, :, Nw+Nm:Ntotal]
-        
-        # Apply value clamping to combined_smooth to ensure stability
-        threshold = 5.0
-        for i in range(combined_smooth.shape[0]):
-            for k in range(combined_smooth.shape[1]):
-                if np.isnan(combined_smooth[i, k]) or np.isinf(combined_smooth[i, k]) or abs(combined_smooth[i, k]) > threshold:
-                    combined_smooth[i, k] = threshold * np.sign(combined_smooth[i, k]) if combined_smooth[i, k] != 0 else 0.001
         
         # Use the combined matrix for VAR estimation
         YY = combined_smooth
@@ -1161,11 +1341,10 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
     # Store index
     self.index_list = index_list
     
-    print(f"self fitting complete - {len(self.valid_draws)} valid draws")
+    print(f"Model fitting complete - {len(self.valid_draws)} valid draws")
     print(f"Data periods: Weekly={self.w_periods}, Monthly={self.m_periods}, Quarterly={self.q_periods}")
     
     return None
-
 
 def check_state_consistency(state, Nw, Nm, Nq, monthly_start, quarterly_start, rmw, rqw):
     """
