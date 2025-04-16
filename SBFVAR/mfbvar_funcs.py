@@ -24,7 +24,7 @@ from scipy.linalg import eig
 from .pseudo_inverse.pseudo_inverse import calculate_pseudo_inverse
 
 
-def varprior(nv,nlags, nex, hyp, premom):
+def varprior(nv, nlags, nex, hyp, premom):
     """
     
 
@@ -343,13 +343,12 @@ def calc_yyact(hyp, YY, spec):
     nobs = int(spec[4])  # number of observations
 
     # Dummy observations - obtain mean and standard deviation from expanded pre-sample data
-    # Use a safer approach to handle potential size mismatches
-    T0_safe = min(T0, YY.shape[0])
-    sample_data = YY[:min(T0_safe + 16, YY.shape[0]), :]
     
-    ybar = np.mean(sample_data, axis=0)[:, np.newaxis]
-    sbar = np.std(sample_data, axis=0, ddof=1)[:, np.newaxis]
+    YY0 = YY[:int(T0+16),:]
+    ybar    =   np.mean(YY0, axis = 0)[:,np.newaxis]
+    sbar    =   np.std(YY0, axis = 0, ddof = 1)[:,np.newaxis] 
     premom = np.hstack((ybar, sbar))
+    
 
     # Create matrices with dummy observations
     YYdum, XXdum = varprior(nv, nlags_, nex_, hyp, premom)

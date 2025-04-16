@@ -35,7 +35,7 @@ import plotly.express as px
 import pickle
 import copy
 
-def save(self, filename="mufbvar_model"):
+def save(self, filename="sbfvar_model"):
     '''
     Saves the MFBVAR Object
     
@@ -61,7 +61,7 @@ def to_excel(self, filename, agg=False, include_metadata=True):
         Whether to include model metadata in a separate sheet
     '''
     # Check if we have forecast data available
-    has_forecasts = hasattr(self, 'forecast_draws_list') or hasattr(self, 'YY_mean_pd')
+    has_forecasts = hasattr(self, 'forecast_draws') or hasattr(self, 'YY_mean_pd')
     has_aggregated = hasattr(self, 'YY_mean_agg') or hasattr(self, 'aggregated_forecast')
     
     # Model metadata for Excel
@@ -73,7 +73,7 @@ def to_excel(self, filename, agg=False, include_metadata=True):
                 'Forecast Horizon', 'Aggregation Frequency'
             ],
             'Value': [
-                'Multi-Frequency BVAR',
+                'SBFVAR',
                 pd.Timestamp.now().strftime('%Y-%m-%d %H:%M'),
                 self.nv if hasattr(self, 'nv') else 'N/A',
                 self.Nw, self.Nm, self.Nq,

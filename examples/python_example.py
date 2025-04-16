@@ -7,7 +7,7 @@ import pickle
 # Preparations
 #---------------------
 
-io_data = "/home/u80856195/git/MUFBVAR-master/examples/hist.xlsx"
+io_data = "/home/u80856195/git/SBFVAR/examples/hist_small.xlsx"
 
 #Model Specification
 H = 96          # forecast horizon
@@ -32,11 +32,11 @@ for freq in range(len(frequencies)):
         data.append(data_temp)
 
 #Transformations
-trans = [np.array((1,1)), np.array((1,1,1)), np.array((1,1,1))]    
+trans = [np.array((1, 1)), np.array((1, 1)), np.array((1, 1))]    
 
 
 # Initialize data class            
-mufbvar_data = SBFVAR.mufbvar_data(data, trans, frequencies)
+mufbvar_data = SBFVAR.sbfbvar_data(data, trans, frequencies)
 
 
 # Fit and Forecast
@@ -50,8 +50,6 @@ model.fit(mufbvar_data, hyp = hyp, var_of_interest = None,  temp_agg = 'mean')
 
 # Create forecasts in highest frequency
 model.forecast(H)
-model.debug_quarterly_extraction()
-model.debug_latent_states()
 
 model.to_excel("test.xlsx")
 # Aggregate
