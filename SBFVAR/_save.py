@@ -93,127 +93,129 @@ def to_excel(self, filename, agg=False, include_metadata=True):
     varlist = self.varlist if hasattr(self, 'varlist') else None
     
     if not has_forecasts:
-        # For models where we only have MCMC output without forecasts
-        print("No forecasts available. Creating Excel file from smoothed states...")
         
-        # Get selection vector for transformations
-        select = self.select if hasattr(self, 'select') else np.zeros(Ntotal)
+        if len(self.index_list[-1][self.nlags:]) == self.lstate_list[0].shape[0]:
         
-        # Check if we have smoothed states
-        if hasattr(self, 'a_draws'):
-            # Get valid draws (after burn-in)
-            valid_draws = self.valid_draws if hasattr(self, 'valid_draws') else \
-                          [i for i in range(self.nsim) if i >= self.nburn]
+            index = copy.deepcopy(self.index_list[-1][self.nlags:])
+        
+        else:
+            index = range(self.lstate_list[0,:,:].shape[0])
+        
+        #mean
+        YYnow_m = np.mean(self.YYactsim_list[self.valid_draws,1:(self.rqw+1),:self.Nw], axis = 0) # actual/nowcast weeklies
+        if YYnow_m.size:
+            YYnow_m[:, (self.select_w== 1)] = 100 * YYnow_m[:, (self.select_w == 1)]
+            YYnow_m[:, (self.select_w == 0)] = np.exp(YYnow_m[:,(self.select_w == 0)])
+        
+        lstate_m = np.mean(self.lstate_list[self.valid_draws,:,:], axis = 0)# hf obs for lf vars
+        lstate_m[:, (self.select_m_q == 1)] = 100 * lstate_m[:, (self.select_m_q == 1)]
+        lstate_m[:, (self.select_m_q == 0)] = np.exp(lstate_m[:, (self.select_m_q == 0)])
+        
+        YW = copy.deepcopy(self.input_data_W)[self.rqw:-(self.rqw)]
+        YW[:, (self.select_w == 1)] = 100 * YW[:, (self.select_w == 1)]
+        YW[:, (self.select_w == 0)] = np.exp(YW[:, (self.select_w == 0)])
+
+        YY_m = np.vstack((np.vstack((np.hstack((YW, lstate_m[:-(self.rqw),:])), np.hstack((YYnow_m, lstate_m[-self.rqw:,:]))))))
+        #median
+        
+        YYnow_med = np.nanmedian(self.YYactsim_list[self.valid_draws,1:(self.rqw+1),:self.Nw], axis = 0) # actual/nowcast weeklies
+        if YYnow_med.size:
+            YYnow_med[:, (self.select_w== 1)] = 100 * YYnow_m[:, (self.select_w == 1)]
+            YYnow_med[:, (self.select_w == 0)] = np.exp(YYnow_m[:,(self.select_w == 0)])
+        
+        lstate_med = np.nanmedian(self.lstate_list[self.valid_draws,:,:], axis = 0)# hf obs for lf vars
+        lstate_med[:, (self.select_m_q == 1)] = 100 * lstate_med[:, (self.select_m_q == 1)]
+        lstate_med[:, (self.select_m_q == 0)] = np.exp(lstate_med[:, (self.select_m_q == 0)])
+        
+        YY_med = np.vstack((np.vstack((np.hstack((YW, lstate_med[:-(self.rqw),:])), np.hstack((YYnow_m, lstate_med[-self.rqw:,:]))))))
+        
+        YYnow_095 = np.nanquantile(self.YYactsim_list[self.valid_draws,1:(self.rqw+1),:self.Nw],  q = 0.95, axis = 0) # actual/nowcast weeklies
+        if YYnow_095.size:
+            YYnow_095[:, (self.select_w== 1)] = 100 * YYnow_m[:, (self.select_w == 1)]
+            YYnow_095[:, (self.select_w == 0)] = np.exp(YYnow_m[:,(self.select_w == 0)])
+        
+        lstate_095 = np.nanquantile(self.lstate_list[self.valid_draws,:,:],  q = 0.95, axis = 0)# hf obs for lf vars
+        lstate_095[:, (self.select_m_q == 1)] = 100 * lstate_095[:, (self.select_m_q == 1)]
+        lstate_095[:, (self.select_m_q == 0)] = np.exp(lstate_095[:, (self.select_m_q == 0)])
+        
+        YY_095 = np.vstack((np.vstack((np.hstack((YW, lstate_095[:-(self.rqw),:])), np.hstack((YYnow_m, lstate_095[-self.rqw:,:]))))))
+
+        # 84%
+        
+        YYnow_084 = np.nanquantile(self.YYactsim_list[self.valid_draws,1:(self.rqw+1),:self.Nw],  q = 0.84, axis = 0) # actual/nowcast weeklies
+        if YYnow_084.size:
+            YYnow_084[:, (self.select_w== 1)] = 100 * YYnow_m[:, (self.select_w == 1)]
+            YYnow_084[:, (self.select_w == 0)] = np.exp(YYnow_m[:,(self.select_w == 0)])
+        
+        lstate_084 = np.nanquantile(self.lstate_list[self.valid_draws,:,:],  q = 0.84, axis = 0)# hf obs for lf vars
+        lstate_084[:, (self.select_m_q == 1)] = 100 * lstate_084[:, (self.select_m_q == 1)]
+        lstate_084[:, (self.select_m_q == 0)] = np.exp(lstate_084[:, (self.select_m_q == 0)])
+        
+        YY_084 = np.vstack((np.vstack((np.hstack((YW, lstate_084[:-(self.rqw),:])), np.hstack((YYnow_m, lstate_084[-self.rqw:,:]))))))
+
+
+        # 16%
+        
+        YYnow_016 = np.nanquantile(self.YYactsim_list[self.valid_draws,1:(self.rqw+1),:self.Nw],  q = 0.16, axis = 0) # actual/nowcast weeklies
+        if YYnow_016.size:
+            YYnow_016[:, (self.select_w== 1)] = 100 * YYnow_m[:, (self.select_w == 1)]
+            YYnow_016[:, (self.select_w == 0)] = np.exp(YYnow_m[:,(self.select_w == 0)])
+        
+        lstate_016 = np.nanquantile(self.lstate_list[self.valid_draws,:,:],  q = 0.16, axis = 0)# hf obs for lf vars
+        lstate_016[:, (self.select_m_q == 1)] = 100 * lstate_016[:, (self.select_m_q == 1)]
+        lstate_016[:, (self.select_m_q == 0)] = np.exp(lstate_016[:, (self.select_m_q == 0)])
+        
+        YY_016 = np.vstack((np.vstack((np.hstack((YW, lstate_016[:-(self.rqw),:])), np.hstack((YYnow_m, lstate_016[-self.rqw:,:]))))))
             
-            # Get index for the output
-            if len(self.index_list[-1]) == self.a_draws.shape[1]:
-                index = copy.deepcopy(self.index_list[-1])
-            else:
-                # Create a numeric index if date index not available
-                index = pd.RangeIndex(self.a_draws.shape[1])
+        # 5%
+        
+        YYnow_005 = np.nanquantile(self.YYactsim_list[self.valid_draws,1:(self.rqw+1),:self.Nw],  q = 0.05, axis = 0) # actual/nowcast weeklies
+        if YYnow_005.size:
+            YYnow_005[:, (self.select_w== 1)] = 100 * YYnow_m[:, (self.select_w == 1)]
+            YYnow_005[:, (self.select_w == 0)] = np.exp(YYnow_m[:,(self.select_w == 0)])
+        
+        lstate_005 = np.nanquantile(self.lstate_list[self.valid_draws,:,:],  q = 0.05, axis = 0)# hf obs for lf vars
+        lstate_005[:, (self.select_m_q == 1)] = 100 * lstate_005[:, (self.select_m_q == 1)]
+        lstate_005[:, (self.select_m_q == 0)] = np.exp(lstate_005[:, (self.select_m_q == 0)])
+        
+        YY_005 = np.vstack((np.vstack((np.hstack((YW, lstate_005[:-(self.rqw),:])), np.hstack((YYnow_m, lstate_005[-self.rqw:,:]))))))
+        
+        index_start = index[0]
+        
+        index = pd.date_range(start = index_start, periods = YY_m.shape[0], freq = self.frequencies[-1])
+        
+
+        
+        YY_mean_pd = pd.DataFrame(YY_m, columns = self.varlist)
+        YY_mean_pd.index = index
+        
+        YY_median_pd = pd.DataFrame(YY_med, columns = self.varlist)
+        YY_median_pd.index = index
+        
+        YY_095_pd = pd.DataFrame(YY_095, columns = self.varlist)
+        YY_095_pd.index = index
+        
+        YY_005_pd = pd.DataFrame(YY_005, columns = self.varlist)
+        YY_005_pd.index = index
+        
+        YY_084_pd = pd.DataFrame(YY_084, columns = self.varlist)
+        YY_084_pd.index = index
+        
+        YY_016_pd = pd.DataFrame(YY_016, columns = self.varlist)
+        YY_016_pd.index = index
+        
             
-            # Process smoothed states - SAFELY without boolean indexing
-            
-            # Extract mean of smoothed states
-            mean_states = np.mean(self.a_draws[valid_draws], axis=0)
-            median_states = np.median(self.a_draws[valid_draws], axis=0)
-            p095_states = np.quantile(self.a_draws[valid_draws], 0.95, axis=0)
-            p005_states = np.quantile(self.a_draws[valid_draws], 0.05, axis=0)
-            p084_states = np.quantile(self.a_draws[valid_draws], 0.84, axis=0)
-            p016_states = np.quantile(self.a_draws[valid_draws], 0.16, axis=0)
-            
-            # Apply transformations safely using loops
-            
-            # For mean states
-            transformed_mean = mean_states.copy()
-            transformed_median = median_states.copy()
-            transformed_p095 = p095_states.copy()
-            transformed_p005 = p005_states.copy()
-            transformed_p084 = p084_states.copy()
-            transformed_p016 = p016_states.copy()
-            
-            # Weekly variables
-            for i in range(min(Nw, transformed_mean.shape[1])):
-                if i < select.shape[0]:
-                    if select[i] == 1:  # Growth rate
-                        transformed_mean[:, i] = 100 * mean_states[:, i]
-                        transformed_median[:, i] = 100 * median_states[:, i]
-                        transformed_p095[:, i] = 100 * p095_states[:, i]
-                        transformed_p005[:, i] = 100 * p005_states[:, i]
-                        transformed_p084[:, i] = 100 * p084_states[:, i]
-                        transformed_p016[:, i] = 100 * p016_states[:, i]
-                    else:  # Level
-                        transformed_mean[:, i] = np.exp(mean_states[:, i])
-                        transformed_median[:, i] = np.exp(median_states[:, i])
-                        transformed_p095[:, i] = np.exp(p095_states[:, i])
-                        transformed_p005[:, i] = np.exp(p005_states[:, i])
-                        transformed_p084[:, i] = np.exp(p084_states[:, i])
-                        transformed_p016[:, i] = np.exp(p016_states[:, i])
-            
-            # Monthly variables
-            for i in range(min(Nm, transformed_mean.shape[1] - Nw)):
-                idx = Nw + i
-                if idx < select.shape[0]:
-                    if select[idx] == 1:  # Growth rate
-                        transformed_mean[:, idx] = 100 * mean_states[:, idx]
-                        transformed_median[:, idx] = 100 * median_states[:, idx]
-                        transformed_p095[:, idx] = 100 * p095_states[:, idx]
-                        transformed_p005[:, idx] = 100 * p005_states[:, idx]
-                        transformed_p084[:, idx] = 100 * p084_states[:, idx]
-                        transformed_p016[:, idx] = 100 * p016_states[:, idx]
-                    else:  # Level
-                        transformed_mean[:, idx] = np.exp(mean_states[:, idx])
-                        transformed_median[:, idx] = np.exp(median_states[:, idx])
-                        transformed_p095[:, idx] = np.exp(p095_states[:, idx])
-                        transformed_p005[:, idx] = np.exp(p005_states[:, idx])
-                        transformed_p084[:, idx] = np.exp(p084_states[:, idx])
-                        transformed_p016[:, idx] = np.exp(p016_states[:, idx])
-            
-            # Quarterly variables
-            for i in range(min(Nq, transformed_mean.shape[1] - Nw - Nm)):
-                idx = Nw + Nm + i
-                if idx < select.shape[0]:
-                    if select[idx] == 1:  # Growth rate
-                        transformed_mean[:, idx] = 100 * mean_states[:, idx]
-                        transformed_median[:, idx] = 100 * median_states[:, idx]
-                        transformed_p095[:, idx] = 100 * p095_states[:, idx]
-                        transformed_p005[:, idx] = 100 * p005_states[:, idx]
-                        transformed_p084[:, idx] = 100 * p084_states[:, idx]
-                        transformed_p016[:, idx] = 100 * p016_states[:, idx]
-                    else:  # Level
-                        transformed_mean[:, idx] = np.exp(mean_states[:, idx])
-                        transformed_median[:, idx] = np.exp(median_states[:, idx])
-                        transformed_p095[:, idx] = np.exp(p095_states[:, idx])
-                        transformed_p005[:, idx] = np.exp(p005_states[:, idx])
-                        transformed_p084[:, idx] = np.exp(p084_states[:, idx])
-                        transformed_p016[:, idx] = np.exp(p016_states[:, idx])
-            
-            # Create DataFrames
-            df_mean = pd.DataFrame(transformed_mean, index=index, columns=varlist)
-            df_median = pd.DataFrame(transformed_median, index=index, columns=varlist)
-            df_p095 = pd.DataFrame(transformed_p095, index=index, columns=varlist)
-            df_p005 = pd.DataFrame(transformed_p005, index=index, columns=varlist)
-            df_p084 = pd.DataFrame(transformed_p084, index=index, columns=varlist)
-            df_p016 = pd.DataFrame(transformed_p016, index=index, columns=varlist)
-            
-            # Write to Excel
-            with pd.ExcelWriter(filename, engine="xlsxwriter", datetime_format='yyyy-mm-dd') as writer:
-                df_mean.to_excel(writer, sheet_name="mean")
-                df_median.to_excel(writer, sheet_name="median")
-                df_p095.to_excel(writer, sheet_name="95_quantile")
-                df_p005.to_excel(writer, sheet_name="5_quantile")
-                df_p084.to_excel(writer, sheet_name="84_quantile")
-                df_p016.to_excel(writer, sheet_name="16_quantile")
+        with pd.ExcelWriter(filename, engine = "xlsxwriter", datetime_format='yyyy-mm-dd') as writer:
+            #writer = pd.ExcelWriter("sim_data.xlsx", engine="xlsxwriter")
+                YY_mean_pd.to_excel(writer, sheet_name = "mean")
+                YY_median_pd.to_excel(writer, sheet_name = "median")
+                YY_095_pd.to_excel(writer, sheet_name = "95_quantile")
+                YY_005_pd.to_excel(writer, sheet_name = "5_quantile")
+                YY_084_pd.to_excel(writer, sheet_name = "84_quantile")
+                YY_016_pd.to_excel(writer, sheet_name = "16_quantile")
                 
                 if include_metadata:
-                    metadata_df.to_excel(writer, sheet_name="Model_Info", index=False)
-                
-            print(f"Smoothed states exported to {filename}")
-            
-        else:
-            print("No smoothed states available. Cannot create Excel file.")
-            return None
-    
+                    metadata_df.to_excel(writer, sheet_name="Model_Info", index=False)    
     else:
         # For models with forecasts
         if agg:

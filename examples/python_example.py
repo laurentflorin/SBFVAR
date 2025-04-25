@@ -36,7 +36,7 @@ trans = [np.array((1, 1)), np.array((1, 1)), np.array((1, 1))]
 
 
 # Initialize data class            
-mufbvar_data = SBFVAR.sbfbvar_data(data, trans, frequencies)
+mufbvar_data = SBFVAR.sbfvar_data(data, trans, frequencies)
 
 
 # Fit and Forecast

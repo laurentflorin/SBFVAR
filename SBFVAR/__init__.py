@@ -39,7 +39,7 @@ class multifrequency_var:
     from ._save import to_excel, save
 
     
-class sbfbvar_data:
+class sbfvar_data:
     
     """
     Class to prepare the data that will be used in the MUFBVAR
