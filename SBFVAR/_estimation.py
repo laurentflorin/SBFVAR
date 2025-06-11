@@ -1111,75 +1111,75 @@ def forecast(self, H, conditionals = None):
         YYnow_med[:, (self.select_w == 0)] = np.exp(YYnow_m[:,(self.select_w == 0)])
     
     lstate_med = np.nanmedian(self.lstate_list[self.valid_draws,:,:], axis = 0)# hf obs for lf vars
-    lstate_med[:, (self.select_m_q == 1)] = 100 * lstate_m[:, (self.select_m_q == 1)]
-    lstate_med[:, (self.select_m_q == 0)] = np.exp(lstate_m[:, (self.select_m_q == 0)])
+    lstate_med[:, (self.select_m_q == 1)] = 100 * lstate_med[:, (self.select_m_q == 1)]
+    lstate_med[:, (self.select_m_q == 0)] = np.exp(lstate_med[:, (self.select_m_q == 0)])
     
-    YY_med = np.vstack((np.vstack((np.hstack((YW, lstate_m[:-(self.rqw),:])), np.hstack((YYnow_m, lstate_m[-self.rqw:,:])))), YYftr_m))
+    YY_med = np.vstack((np.vstack((np.hstack((YW, lstate_m[:-(self.rqw),:])), np.hstack((YYnow_m, lstate_med[-self.rqw:,:])))), YYftr_m))
 
     # 95%
     YYftr_095 = np.nanquantile(YYvector_ml,  q = 0.95, axis = 0)
-    YYftr_095[:, (self.select == 1)] = 100 * YYftr_m[:, (self.select == 1)]
-    YYftr_095[:, (self.select == 0)] = np.exp(YYftr_m[:, (self.select == 0)])
+    YYftr_095[:, (self.select == 1)] = 100 * YYftr_095[:, (self.select == 1)]
+    YYftr_095[:, (self.select == 0)] = np.exp(YYftr_095[:, (self.select == 0)])
     
     YYnow_095 = np.nanquantile(self.YYactsim_list[self.valid_draws,1:(self.rqw+1),:self.Nw],  q = 0.95, axis = 0) # actual/nowcast weeklies
     if YYnow_095.size:
-        YYnow_095[:, (self.select_w== 1)] = 100 * YYnow_m[:, (self.select_w == 1)]
-        YYnow_095[:, (self.select_w == 0)] = np.exp(YYnow_m[:,(self.select_w == 0)])
+        YYnow_095[:, (self.select_w== 1)] = 100 * YYnow_095[:, (self.select_w == 1)]
+        YYnow_095[:, (self.select_w == 0)] = np.exp(YYnow_095[:,(self.select_w == 0)])
     
     lstate_095 = np.nanquantile(self.lstate_list[self.valid_draws,:,:],  q = 0.95, axis = 0)# hf obs for lf vars
-    lstate_095[:, (self.select_m_q == 1)] = 100 * lstate_m[:, (self.select_m_q == 1)]
-    lstate_095[:, (self.select_m_q == 0)] = np.exp(lstate_m[:, (self.select_m_q == 0)])
+    lstate_095[:, (self.select_m_q == 1)] = 100 * lstate_095[:, (self.select_m_q == 1)]
+    lstate_095[:, (self.select_m_q == 0)] = np.exp(lstate_095[:, (self.select_m_q == 0)])
     
-    YY_095 = np.vstack((np.vstack((np.hstack((YW, lstate_m[:-(self.rqw),:])), np.hstack((YYnow_m, lstate_m[-self.rqw:,:])))), YYftr_m))
+    YY_095 = np.vstack((np.vstack((np.hstack((YW, lstate_095[:-(self.rqw),:])), np.hstack((YYnow_m, lstate_095[-self.rqw:,:])))), YYftr_m))
 
     # 84%
     YYftr_084 = np.nanquantile(YYvector_ml,  q = 0.84, axis = 0)
-    YYftr_084[:, (self.select == 1)] = 100 * YYftr_m[:, (self.select == 1)]
-    YYftr_084[:, (self.select == 0)] = np.exp(YYftr_m[:, (self.select == 0)])
+    YYftr_084[:, (self.select == 1)] = 100 * YYftr_084[:, (self.select == 1)]
+    YYftr_084[:, (self.select == 0)] = np.exp(YYftr_084[:, (self.select == 0)])
     
     YYnow_084 = np.nanquantile(self.YYactsim_list[self.valid_draws,1:(self.rqw+1),:self.Nw],  q = 0.84, axis = 0) # actual/nowcast weeklies
     if YYnow_084.size:
-        YYnow_084[:, (self.select_w== 1)] = 100 * YYnow_m[:, (self.select_w == 1)]
-        YYnow_084[:, (self.select_w == 0)] = np.exp(YYnow_m[:,(self.select_w == 0)])
+        YYnow_084[:, (self.select_w== 1)] = 100 * YYnow_084[:, (self.select_w == 1)]
+        YYnow_084[:, (self.select_w == 0)] = np.exp(YYnow_084[:,(self.select_w == 0)])
     
     lstate_084 = np.nanquantile(self.lstate_list[self.valid_draws,:,:],  q = 0.84, axis = 0)# hf obs for lf vars
-    lstate_084[:, (self.select_m_q == 1)] = 100 * lstate_m[:, (self.select_m_q == 1)]
-    lstate_084[:, (self.select_m_q == 0)] = np.exp(lstate_m[:, (self.select_m_q == 0)])
+    lstate_084[:, (self.select_m_q == 1)] = 100 * lstate_084[:, (self.select_m_q == 1)]
+    lstate_084[:, (self.select_m_q == 0)] = np.exp(lstate_084[:, (self.select_m_q == 0)])
     
-    YY_084 = np.vstack((np.vstack((np.hstack((YW, lstate_m[:-(self.rqw),:])), np.hstack((YYnow_m, lstate_m[-self.rqw:,:])))), YYftr_m))
+    YY_084 = np.vstack((np.vstack((np.hstack((YW, lstate_084[:-(self.rqw),:])), np.hstack((YYnow_m, lstate_084[-self.rqw:,:])))), YYftr_m))
 
 
     # 16%
     YYftr_016 = np.nanquantile(YYvector_ml,  q = 0.16, axis = 0)
-    YYftr_016[:, (self.select == 1)] = 100 * YYftr_m[:, (self.select == 1)]
-    YYftr_016[:, (self.select == 0)] = np.exp(YYftr_m[:, (self.select == 0)])
+    YYftr_016[:, (self.select == 1)] = 100 * YYftr_016[:, (self.select == 1)]
+    YYftr_016[:, (self.select == 0)] = np.exp(YYftr_016[:, (self.select == 0)])
     
     YYnow_016 = np.nanquantile(self.YYactsim_list[self.valid_draws,1:(self.rqw+1),:self.Nw],  q = 0.16, axis = 0) # actual/nowcast weeklies
     if YYnow_016.size:
-        YYnow_016[:, (self.select_w== 1)] = 100 * YYnow_m[:, (self.select_w == 1)]
-        YYnow_016[:, (self.select_w == 0)] = np.exp(YYnow_m[:,(self.select_w == 0)])
+        YYnow_016[:, (self.select_w== 1)] = 100 * YYnow_016[:, (self.select_w == 1)]
+        YYnow_016[:, (self.select_w == 0)] = np.exp(YYnow_016[:,(self.select_w == 0)])
     
     lstate_016 = np.nanquantile(self.lstate_list[self.valid_draws,:,:],  q = 0.16, axis = 0)# hf obs for lf vars
-    lstate_016[:, (self.select_m_q == 1)] = 100 * lstate_m[:, (self.select_m_q == 1)]
-    lstate_016[:, (self.select_m_q == 0)] = np.exp(lstate_m[:, (self.select_m_q == 0)])
+    lstate_016[:, (self.select_m_q == 1)] = 100 * lstate_016[:, (self.select_m_q == 1)]
+    lstate_016[:, (self.select_m_q == 0)] = np.exp(lstate_016[:, (self.select_m_q == 0)])
     
-    YY_016 = np.vstack((np.vstack((np.hstack((YW, lstate_m[:-(self.rqw),:])), np.hstack((YYnow_m, lstate_m[-self.rqw:,:])))), YYftr_m))
+    YY_016 = np.vstack((np.vstack((np.hstack((YW, lstate_016[:-(self.rqw),:])), np.hstack((YYnow_m, lstate_016[-self.rqw:,:])))), YYftr_m))
         
     # 5%
     YYftr_005 = np.nanquantile(YYvector_ml,  q = 0.05, axis = 0)
-    YYftr_005[:, (self.select == 1)] = 100 * YYftr_m[:, (self.select == 1)]
-    YYftr_005[:, (self.select == 0)] = np.exp(YYftr_m[:, (self.select == 0)])
+    YYftr_005[:, (self.select == 1)] = 100 * YYftr_005[:, (self.select == 1)]
+    YYftr_005[:, (self.select == 0)] = np.exp(YYftr_005[:, (self.select == 0)])
     
     YYnow_005 = np.nanquantile(self.YYactsim_list[self.valid_draws,1:(self.rqw+1),:self.Nw],  q = 0.05, axis = 0) # actual/nowcast weeklies
     if YYnow_005.size:
-        YYnow_005[:, (self.select_w== 1)] = 100 * YYnow_m[:, (self.select_w == 1)]
-        YYnow_005[:, (self.select_w == 0)] = np.exp(YYnow_m[:,(self.select_w == 0)])
+        YYnow_005[:, (self.select_w== 1)] = 100 * YYnow_005[:, (self.select_w == 1)]
+        YYnow_005[:, (self.select_w == 0)] = np.exp(YYnow_005[:,(self.select_w == 0)])
     
     lstate_005 = np.nanquantile(self.lstate_list[self.valid_draws,:,:],  q = 0.05, axis = 0)# hf obs for lf vars
-    lstate_005[:, (self.select_m_q == 1)] = 100 * lstate_m[:, (self.select_m_q == 1)]
-    lstate_005[:, (self.select_m_q == 0)] = np.exp(lstate_m[:, (self.select_m_q == 0)])
+    lstate_005[:, (self.select_m_q == 1)] = 100 * lstate_005[:, (self.select_m_q == 1)]
+    lstate_005[:, (self.select_m_q == 0)] = np.exp(lstate_005[:, (self.select_m_q == 0)])
     
-    YY_005 = np.vstack((np.vstack((np.hstack((YW, lstate_m[:-(self.rqw),:])), np.hstack((YYnow_m, lstate_m[-self.rqw:,:])))), YYftr_m))
+    YY_005 = np.vstack((np.vstack((np.hstack((YW, lstate_005[:-(self.rqw),:])), np.hstack((YYnow_m, lstate_005[-self.rqw:,:])))), YYftr_m))
     
     YY_mean_pd = pd.DataFrame(YY_m, columns = self.varlist)
     YY_mean_pd.index = index
