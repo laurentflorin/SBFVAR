@@ -32,7 +32,7 @@ pio.renderers.default = 'browser'
 
 
 
-def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
+def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_explosive = 1000, check_explosive = True):
     """
     Fit the mixed-frequency BVAR model using MUFBVAR's approach with
     built-in aggregation relationships in the measurement equation.
@@ -318,566 +318,583 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean'):
     print("SBFVAR: Estimation", end = '\n')
     print("Frequencies: ", "Q, M, W", end = "\n")
     print("Total Number of Draws: ",self.nsim)
-    
-    for j in tqdm(range(self.nsim)):
-        # If not first iteration, use state from previous draw
-        if j > 0:
-            a_t = At_draw[0,:].copy()# Use .copy() to avoid modifying the stored value
-            P_t = Pmean.copy()
+    tries_at_j0 = 0
+    should_restart = True
+    while should_restart:
+        should_restart = False
+        if tries_at_j0 == 100:
+            raise NameError('No Stable VAR at j=0')
+        for j in tqdm(range(self.nsim)):
+            
+            restart_j0 = False
+            # If not first iteration, use state from previous draw
+            if j > 0:
+                a_t = At_draw[0,:].copy()# Use .copy() to avoid modifying the stored value
+                P_t = Pmean.copy()
 
-        for t in range(nobs):
-            # Current week index
-            w_idx = T0 + t
+            for t in range(nobs):
+                # Current week index
+                w_idx = T0 + t
 
-            # Check if this is a period with low-frequency observations
-            is_quarter_end = q_obs_periods[w_idx] if w_idx < len(q_obs_periods) else False
-            is_month_end = m_obs_periods[w_idx] if w_idx < len(m_obs_periods) else False
-            
-            # PREDICTION STEP
-            # ---------------
-            a_prev = a_t
-            P_prev = P_t
-            
-            # State prediction
-            a_pred = GAMMAs @ a_prev + GAMMAz @ Z_t[t,:] + GAMMAc.flatten()
-            P_pred = GAMMAs @ P_prev @ GAMMAs.T + GAMMAu[:, :Nm] @ sigma_mm @ GAMMAu[:, :Nm].T + GAMMAu[:, Nm:Nm+Nq] @ sigma_qq @ GAMMAu[:, Nm:Nm+Nq].T
-            P_pred = 0.5 * (P_pred + P_pred.T)  # Ensure symmetry
-            
-            # MEASUREMENT STEP PREPARATION
-            # ---------------------------
-            
-            # Initialize measurement components
-            LAMBDAs_list = []
-            LAMBDAc_list = []
-            LAMBDAz_list = []
-            LAMBDAu_list = []
-            y_obs = []
-            # Weekly observations (if available)
-            if Nw > 0 and w_idx < Tw:
-                LAMBDAs_list.append(LAMBDAs_w)
-                LAMBDAc_list.append(LAMBDAc_w)
-                LAMBDAz_list.append(LAMBDAz_w)
-                #LAMBDAu_list.append(LAMBDAu_w)
-                y_obs.append(YW[w_idx])
-                LAMBDAu = LAMBDAu_w
-                sigma_t = sigma_ww            
+                # Check if this is a period with low-frequency observations
+                is_quarter_end = q_obs_periods[w_idx] if w_idx < len(q_obs_periods) else False
+                is_month_end = m_obs_periods[w_idx] if w_idx < len(m_obs_periods) else False
                 
-            
-            # Monthly observations (if at month end)
-            if is_month_end and Nm > 0:
-                if m_idx < Tm:
-                    # Regular monthly measurement
-                    y_obs.append(YM[w_idx])
-                    LAMBDAs_list.append(LAMBDAs_m)
-                    LAMBDAc_list.append(np.zeros((Nm, 1)))
-                    LAMBDAz_list.append(LAMBDAz_m)
-                    #LAMBDAu_list.append(LAMBDAu_m)
-                    LAMBDAu = LAMBDAu_m
-                    sigma_t = np.block([
-                        [sigma_ww, sigma_wm],
-                        [sigma_mw, sigma_mm]
-                    ])
-
-
-            # Quarterly observations (if at quarter end)
-            if is_quarter_end and Nq > 0:
-                if q_idx < Tq:
-                    # Regular quarterly measurement
-                    y_obs.append(YQ[w_idx])
-                    LAMBDAs_list.append(LAMBDAs_q)
-                    LAMBDAc_list.append(np.zeros((Nq, 1)))
-                    LAMBDAz_list.append(LAMBDAz_q)
-                    #LAMBDAu_list.append(LAMBDAu_q )
-                    LAMBDAu = LAMBDAu_q
-                    sigma_t = np.block([
-                        [sigma_ww, sigma_wm, sigma_wq],
-                        [sigma_mw, sigma_mm, sigma_mq],
-                        [sigma_qw, sigma_qm, sigma_qq]
-                    ])          
-            
-            # Combine measurement components
-            if LAMBDAs_list:
-                LAMBDAs = np.vstack(LAMBDAs_list)
-                LAMBDAc = np.vstack(LAMBDAc_list)
-                LAMBDAz = np.vstack(LAMBDAz_list)
-                #LAMBDAu = np.vstack(LAMBDAu_list)
-                y = np.concatenate(y_obs)
-                # MEASUREMENT UPDATE
-                # -----------------
+                # PREDICTION STEP
+                # ---------------
+                a_prev = a_t
+                P_prev = P_t
                 
-                # Measurement prediction
-                y_hat = LAMBDAs @ a_pred + LAMBDAz @ Z_t[t,:] + LAMBDAc.flatten()
-                nu = y - y_hat
+                # State prediction
+                a_pred = GAMMAs @ a_prev + GAMMAz @ Z_t[t,:] + GAMMAc.flatten()
+                P_pred = GAMMAs @ P_prev @ GAMMAs.T + GAMMAu[:, :Nm] @ sigma_mm @ GAMMAu[:, :Nm].T + GAMMAu[:, Nm:Nm+Nq] @ sigma_qq @ GAMMAu[:, Nm:Nm+Nq].T
+                P_pred = 0.5 * (P_pred + P_pred.T)  # Ensure symmetry
                 
-                # First term: prediction covariance 
-                S = (LAMBDAs @ P_pred @ LAMBDAs.T +                            # Prediction covariance
-                    LAMBDAu @ sigma_ww @ LAMBDAu.T +                          # Weekly measurement error
-                    
-                    # Monthly cross-terms (both directions)
-                    LAMBDAs @ GAMMAu[:, :Nm] @ sigma_mw @ LAMBDAu.T +         # Monthly to measurement
-                    LAMBDAu @ sigma_wm @ GAMMAu[:, :Nm].T @ LAMBDAs.T +       # Measurement to monthly
-                    
-                    # Quarterly cross-terms (both directions)
-                    LAMBDAs @ GAMMAu[:, Nm:] @ sigma_qw @ LAMBDAu.T +         # Quarterly to measurement
-                    LAMBDAu @ sigma_wq @ GAMMAu[:, Nm:].T @ LAMBDAs.T# +       # Measurement to quarterly
-                )
-                #TODO There are no monthly quarterly cross terms, OK? or Xi and S
-                # Ensure symmetry
-                S = 0.5 * (S + S.T)
-                Xi = LAMBDAs @ P_pred + LAMBDAu @ sigma_wm @ GAMMAu[:, :Nm].T + LAMBDAu @ sigma_wq @ GAMMAu[:, Nm:].T
+                # MEASUREMENT STEP PREPARATION
+                # ---------------------------
                 
-                # Calculate Kalman gain
-                K = Xi.T @ invert_matrix(S)
+                # Initialize measurement components
+                LAMBDAs_list = []
+                LAMBDAc_list = []
+                LAMBDAz_list = []
+                LAMBDAu_list = []
+                y_obs = []
+                # Weekly observations (if available)
+                if Nw > 0 and w_idx < Tw:
+                    LAMBDAs_list.append(LAMBDAs_w)
+                    LAMBDAc_list.append(LAMBDAc_w)
+                    LAMBDAz_list.append(LAMBDAz_w)
+                    #LAMBDAu_list.append(LAMBDAu_w)
+                    y_obs.append(YW[w_idx])
+                    LAMBDAu = LAMBDAu_w
+                    sigma_t = sigma_ww            
+                    
+                
+                # Monthly observations (if at month end)
+                if is_month_end and Nm > 0:
+                    if m_idx < Tm:
+                        # Regular monthly measurement
+                        y_obs.append(YM[w_idx])
+                        LAMBDAs_list.append(LAMBDAs_m)
+                        LAMBDAc_list.append(np.zeros((Nm, 1)))
+                        LAMBDAz_list.append(LAMBDAz_m)
+                        #LAMBDAu_list.append(LAMBDAu_m)
+                        LAMBDAu = LAMBDAu_m
+                        sigma_t = np.block([
+                            [sigma_ww, sigma_wm],
+                            [sigma_mw, sigma_mm]
+                        ])
 
-                # Update state estimate
-                a_t = a_pred + K @ nu
 
-                # Update state covariance
-                P_t = P_pred - K @ Xi
-
-                # Ensure symmetry of P_t
-                P_t = 0.5 * (P_t + P_t.T)
-            else:
-                # No observations - just prediction
-                a_t = a_pred
-                P_t = P_pred
-            
-            # Store filtered state and covariance
-            a_filtered[t] = a_t.T
-            P_filtered[t] = P_t
-            P_filtered2[t] = P_t.reshape((1, (Nstate*(p+1))**2), order = "F")
-        
-        Ptilde = P_filtered[nobs-1].reshape(Nstate*(p+1), Nstate * (p+1), order = "F")
-        
-        
-        
-        ########## Unbalanced Dataset with Three Frequencies ###########
+                # Quarterly observations (if at quarter end)
+                if is_quarter_end and Nq > 0:
+                    if q_idx < Tq:
+                        # Regular quarterly measurement
+                        y_obs.append(YQ[w_idx])
+                        LAMBDAs_list.append(LAMBDAs_q)
+                        LAMBDAc_list.append(np.zeros((Nq, 1)))
+                        LAMBDAz_list.append(LAMBDAz_q)
+                        #LAMBDAu_list.append(LAMBDAu_q )
+                        LAMBDAu = LAMBDAu_q
+                        sigma_t = np.block([
+                            [sigma_ww, sigma_wm, sigma_wq],
+                            [sigma_mw, sigma_mm, sigma_mq],
+                            [sigma_qw, sigma_qm, sigma_qq]
+                        ])          
+                
+                # Combine measurement components
+                if LAMBDAs_list:
+                    LAMBDAs = np.vstack(LAMBDAs_list)
+                    LAMBDAc = np.vstack(LAMBDAc_list)
+                    LAMBDAz = np.vstack(LAMBDAz_list)
+                    #LAMBDAu = np.vstack(LAMBDAu_list)
+                    y = np.concatenate(y_obs)
+                    # MEASUREMENT UPDATE
+                    # -----------------
                     
-        # Define dimensions for companion form
-        kn = Ntotal * (p + 1)  # All variables with lags
-        Tstar = YW.shape[0] - T0
-        # Define forecast horizons consistent with MUFBVAR approach
-        Tnew = Tstar - nobs  # Number of periods to forecast
-        Tnobs = nobs + Tnew  # Total periods (observed + forecast)
+                    # Measurement prediction
+                    y_hat = LAMBDAs @ a_pred + LAMBDAz @ Z_t[t,:] + LAMBDAc.flatten()
+                    nu = y - y_hat
                     
-        # Measurement Equation
-                    
-        # Weekly measurement (direct observation)
-        Z0 = np.zeros((Nw, kn))
-        Z0[:, :Nw] = np.eye(Nw)  # Current weekly values observed directly
-
-        # Monthly measurement (temporal aggregation from weekly)
-        Z1 = np.zeros((Nm, kn))
-        # Monthly is aggregate of 4 weeks
-        for bb in range(Nm):
-            for ll in range(rmw):  # Weekly to monthly ratio (typically 4)
-                if self.temp_agg == "mean":
-                    Z1[bb, ll*Ntotal + bb] = 1/rmw
-                if self.temp_agg == "sum":
-                    Z1[bb, ll*Ntotal + bb] = 1
-                    
-        # Quarterly measurement (temporal aggregation from weekly)
-        Z2 = np.zeros((Nq, kn))
-        # Quarterly is aggregate of 12 weeks
-        for bb in range(Nq):
-            for ll in range(rqw):  # Weekly to quarterly ratio (typically 12)
-                if self.temp_agg == "mean":
-                    Z2[bb, ll*Ntotal + Nw+Nm+bb] = 1/rqw
-                if self.temp_agg == "sum":
-                    Z2[bb, ll*Ntotal + Nw+Nm+bb] = 1
-                    
-        # Combine all measurement equations
-        ZZ = np.vstack((Z0, Z1, Z2))
-                    
-        # Construct full state vector from filtered state and observations
-
-        # We have weekly data for direct variables
-        BAt = np.concatenate((
-            YW[T0+nobs-1, :],                     # Current weekly obs
-            a_filtered[nobs-1, :Nm],              # Current monthly state
-            a_filtered[nobs-1, Nm_states:Nm_states+Nq]  # Current quarterly state
-        ))
-        
-        # Add lagged values
-        for rr in range(1, p+1):
-            if T0+nobs-1-rr >= 0:  # Check if we have enough weekly data
-                BAt = np.concatenate((BAt, np.concatenate((
-                    YW[T0+nobs-1-rr, :],  # Lagged weekly obs
-                    a_filtered[nobs-1, rr*Nm:(rr+1)*Nm],  # Lagged monthly state
-                    a_filtered[nobs-1, Nm_states+rr*Nq:Nm_states+(rr+1)*Nq]  # Lagged quarterly state
-                ))))
-            else:
-                BAt = np.concatenate((BAt, np.concatenate((
-                    np.zeros(Nw),  # Padding for missing weekly
-                    a_filtered[nobs-1, rr*Nm:(rr+1)*Nm],  # Lagged monthly state
-                    a_filtered[nobs-1, Nm_states+rr*Nq:Nm_states+(rr+1)*Nq]  # Lagged quarterly state
-                ))))
-    
-        # Initialize covariance matrix BPt
-        BPt = np.zeros((kn, kn))
-
-        # Weekly variables use small initial values
-        for rr in range(p+1):
-            for vv in range(p+1):
-                    BPt[(rr+1)*Nw+rr*Nstate:(rr+1)*(Nw+Nstate), (vv+1)*Nw+vv*Nstate:(vv+1)*(Nw+Nstate)] = np.squeeze(
-                        Ptilde[rr*Nstate:(rr+1)*Nstate,vv*Nstate:(vv+1)*Nstate])
-        
-        # Initialize storage for state and covariance
-        BAt_mat = np.zeros((Tnobs, kn))
-        BPt_mat = np.zeros((Tnobs, kn**2))
-                    
-        # Store initial state and covariance
-        BAt_mat[nobs-1, :] = BAt
-        BPt_mat[nobs-1, :] = BPt.reshape((1, kn**2), order="F")
-                    
-        # Define companion form matrix PHIF
-        PHIF = np.zeros((kn, kn))
-        IF = np.eye(Ntotal)
-        for i in range(p):
-            PHIF[(i+1)*Ntotal:(i+2)*Ntotal, i*Ntotal:(i+1)*Ntotal] = IF
+                    # First term: prediction covariance 
+                    S = (LAMBDAs @ P_pred @ LAMBDAs.T +                            # Prediction covariance
+                        LAMBDAu @ sigma_ww @ LAMBDAu.T +                          # Weekly measurement error
                         
-        # Set VAR coefficients
-        PHIF[:Ntotal, :Ntotal*p] = Phi[:-1, :].T
+                        # Monthly cross-terms (both directions)
+                        LAMBDAs @ GAMMAu[:, :Nm] @ sigma_mw @ LAMBDAu.T +         # Monthly to measurement
+                        LAMBDAu @ sigma_wm @ GAMMAu[:, :Nm].T @ LAMBDAs.T +       # Measurement to monthly
+                        
+                        # Quarterly cross-terms (both directions)
+                        LAMBDAs @ GAMMAu[:, Nm:] @ sigma_qw @ LAMBDAu.T +         # Quarterly to measurement
+                        LAMBDAu @ sigma_wq @ GAMMAu[:, Nm:].T @ LAMBDAs.T# +       # Measurement to quarterly
+                    )
+                    #TODO There are no monthly quarterly cross terms, OK? or Xi and S
+                    # Ensure symmetry
+                    S = 0.5 * (S + S.T)
+                    Xi = LAMBDAs @ P_pred + LAMBDAu @ sigma_wm @ GAMMAu[:, :Nm].T + LAMBDAu @ sigma_wq @ GAMMAu[:, Nm:].T
                     
-        # Define constant term CONF
-        CONF = np.hstack((Phi[-1, :].T, np.zeros(Ntotal*p)))
-                    
-        # Define covariance term SIGF
-        SIGF = np.zeros((kn, kn))
-        SIGF[:Ntotal, :Ntotal] = sigma
-                    
-        # Filter Loop
-        # --------------------
-        for t in range(nobs, Tnobs-T0):
-            # Index relative to forecast start
-            kkk = t - nobs
-            
-            # Define new data (ND) and new Z matrix (NZ)
-            ND_indices = ~index_NY[:, kkk]
-            ND = YDATA_forecast[kkk, ND_indices] if np.any(ND_indices) else np.array([])
-            NZ = ZZ[ND_indices, :] if np.any(ND_indices) else np.empty((0, kn))
-            
-            # Previous state and covariance
-            BAt1 = BAt_mat[t-1, :]
-            BPt1 = BPt_mat[t-1, :].reshape((kn, kn), order="F")
-            
-            # Prediction step
-            Balphahat = PHIF @ BAt1 + CONF
-            BPhat = PHIF @ BPt1 @ PHIF.T + SIGF
-            BPhat = 0.5 * (BPhat + BPhat.T)  # Ensure symmetry
-            
-            # Update step (if we have observations)
-            if NZ.shape[0] > 0:
-                Byhat = NZ @ Balphahat
-                Bnut = ND - Byhat
+                    # Calculate Kalman gain
+                    K = Xi.T @ invert_matrix(S)
+
+                    # Update state estimate
+                    a_t = a_pred + K @ nu
+
+                    # Update state covariance
+                    P_t = P_pred - K @ Xi
+
+                    # Ensure symmetry of P_t
+                    P_t = 0.5 * (P_t + P_t.T)
+                else:
+                    # No observations - just prediction
+                    a_t = a_pred
+                    P_t = P_pred
                 
-                BFt = NZ @ BPhat @ NZ.T
-                BFt = 0.5 * (BFt + BFt.T)  # Ensure symmetry
+                # Store filtered state and covariance
+                a_filtered[t] = a_t.T
+                P_filtered[t] = P_t
+                P_filtered2[t] = P_t.reshape((1, (Nstate*(p+1))**2), order = "F")
+            
+            Ptilde = P_filtered[nobs-1].reshape(Nstate*(p+1), Nstate * (p+1), order = "F")
+            
+            
+            
+            ########## Unbalanced Dataset with Three Frequencies ###########
+                        
+            # Define dimensions for companion form
+            kn = Ntotal * (p + 1)  # All variables with lags
+            Tstar = YW.shape[0] - T0
+            # Define forecast horizons consistent with MUFBVAR approach
+            Tnew = Tstar - nobs  # Number of periods to forecast
+            Tnobs = nobs + Tnew  # Total periods (observed + forecast)
+                        
+            # Measurement Equation
+                        
+            # Weekly measurement (direct observation)
+            Z0 = np.zeros((Nw, kn))
+            Z0[:, :Nw] = np.eye(Nw)  # Current weekly values observed directly
+
+            # Monthly measurement (temporal aggregation from weekly)
+            Z1 = np.zeros((Nm, kn))
+            # Monthly is aggregate of 4 weeks
+            for bb in range(Nm):
+                for ll in range(rmw):  # Weekly to monthly ratio (typically 4)
+                    if self.temp_agg == "mean":
+                        Z1[bb, ll*Ntotal + bb] = 1/rmw
+                    if self.temp_agg == "sum":
+                        Z1[bb, ll*Ntotal + bb] = 1
+                        
+            # Quarterly measurement (temporal aggregation from weekly)
+            Z2 = np.zeros((Nq, kn))
+            # Quarterly is aggregate of 12 weeks
+            for bb in range(Nq):
+                for ll in range(rqw):  # Weekly to quarterly ratio (typically 12)
+                    if self.temp_agg == "mean":
+                        Z2[bb, ll*Ntotal + Nw+Nm+bb] = 1/rqw
+                    if self.temp_agg == "sum":
+                        Z2[bb, ll*Ntotal + Nw+Nm+bb] = 1
+                        
+            # Combine all measurement equations
+            ZZ = np.vstack((Z0, Z1, Z2))
+                        
+            # Construct full state vector from filtered state and observations
+
+            # We have weekly data for direct variables
+            BAt = np.concatenate((
+                YW[T0+nobs-1, :],                     # Current weekly obs
+                a_filtered[nobs-1, :Nm],              # Current monthly state
+                a_filtered[nobs-1, Nm_states:Nm_states+Nq]  # Current quarterly state
+            ))
+            
+            # Add lagged values
+            for rr in range(1, p+1):
+                if T0+nobs-1-rr >= 0:  # Check if we have enough weekly data
+                    BAt = np.concatenate((BAt, np.concatenate((
+                        YW[T0+nobs-1-rr, :],  # Lagged weekly obs
+                        a_filtered[nobs-1, rr*Nm:(rr+1)*Nm],  # Lagged monthly state
+                        a_filtered[nobs-1, Nm_states+rr*Nq:Nm_states+(rr+1)*Nq]  # Lagged quarterly state
+                    ))))
+                else:
+                    BAt = np.concatenate((BAt, np.concatenate((
+                        np.zeros(Nw),  # Padding for missing weekly
+                        a_filtered[nobs-1, rr*Nm:(rr+1)*Nm],  # Lagged monthly state
+                        a_filtered[nobs-1, Nm_states+rr*Nq:Nm_states+(rr+1)*Nq]  # Lagged quarterly state
+                    ))))
+        
+            # Initialize covariance matrix BPt
+            BPt = np.zeros((kn, kn))
+
+            # Weekly variables use small initial values
+            for rr in range(p+1):
+                for vv in range(p+1):
+                        BPt[(rr+1)*Nw+rr*Nstate:(rr+1)*(Nw+Nstate), (vv+1)*Nw+vv*Nstate:(vv+1)*(Nw+Nstate)] = np.squeeze(
+                            Ptilde[rr*Nstate:(rr+1)*Nstate,vv*Nstate:(vv+1)*Nstate])
+            
+            # Initialize storage for state and covariance
+            BAt_mat = np.zeros((Tnobs, kn))
+            BPt_mat = np.zeros((Tnobs, kn**2))
+                        
+            # Store initial state and covariance
+            BAt_mat[nobs-1, :] = BAt
+            BPt_mat[nobs-1, :] = BPt.reshape((1, kn**2), order="F")
+                        
+            # Define companion form matrix PHIF
+            PHIF = np.zeros((kn, kn))
+            IF = np.eye(Ntotal)
+            for i in range(p):
+                PHIF[(i+1)*Ntotal:(i+2)*Ntotal, i*Ntotal:(i+1)*Ntotal] = IF
+                            
+            # Set VAR coefficients
+            PHIF[:Ntotal, :Ntotal*p] = Phi[:-1, :].T
+                        
+            # Define constant term CONF
+            CONF = np.hstack((Phi[-1, :].T, np.zeros(Ntotal*p)))
+                        
+            # Define covariance term SIGF
+            SIGF = np.zeros((kn, kn))
+            SIGF[:Ntotal, :Ntotal] = sigma
+                        
+            # Filter Loop
+            # --------------------
+            for t in range(nobs, Tnobs-T0):
+                # Index relative to forecast start
+                kkk = t - nobs
                 
-                # Kalman gain and update
-                sol_1 = (BPhat @ NZ.T) @ invert_matrix(BFt)
-                BAt = Balphahat + sol_1 @ Bnut
-                BPt = BPhat - sol_1 @ (BPhat @ NZ.T).T
-            else:
-                # No observations, just prediction
-                BAt = Balphahat
-                BPt = BPhat
-            
-            # Store filtered state and covariance
-            BAt_mat[t, :] = BAt
-            BPt_mat[t, :] = BPt.reshape((1, kn**2), order="F")
+                # Define new data (ND) and new Z matrix (NZ)
+                ND_indices = ~index_NY[:, kkk]
+                ND = YDATA_forecast[kkk, ND_indices] if np.any(ND_indices) else np.array([])
+                NZ = ZZ[ND_indices, :] if np.any(ND_indices) else np.empty((0, kn))
+                
+                # Previous state and covariance
+                BAt1 = BAt_mat[t-1, :]
+                BPt1 = BPt_mat[t-1, :].reshape((kn, kn), order="F")
+                
+                # Prediction step
+                Balphahat = PHIF @ BAt1 + CONF
+                BPhat = PHIF @ BPt1 @ PHIF.T + SIGF
+                BPhat = 0.5 * (BPhat + BPhat.T)  # Ensure symmetry
+                
+                # Update step (if we have observations)
+                if NZ.shape[0] > 0:
+                    Byhat = NZ @ Balphahat
+                    Bnut = ND - Byhat
                     
-        # Draw from the posterior at final time point
-        AT_draw = np.zeros((Tnew + 1, kn))
+                    BFt = NZ @ BPhat @ NZ.T
+                    BFt = 0.5 * (BFt + BFt.T)  # Ensure symmetry
                     
-        # Draw from multivariate normal
-        Pchol = cholcovOrEigendecomp(BPt_mat[Tnobs-1, :].reshape((kn, kn), order="F"))
-        AT_draw[-1, :] = BAt_mat[Tnobs-1, :] + np.transpose(Pchol @ np.random.standard_normal(kn))
-                    
-        # Kalman Smoother
-        # -------------------
-        for i in range(Tnew):
-            # Get filtered state and covariance at time t
-            BAtt = BAt_mat[Tnobs-(i+2), :]
-            BPtt = BPt_mat[Tnobs-(i+2), :].reshape((kn, kn), order="F")
-            
-            # Prediction from t to t+1
-            BPhat = PHIF @ BPtt @ PHIF.T + SIGF
-            BPhat = 0.5 * (BPhat + BPhat.T)
-            
-            # Inverse of prediction covariance
-            inv_BPhat = invert_matrix(BPhat)
-            
-            # Innovation (difference between sampled state and prediction)
-            Bnut = AT_draw[-(i+1), :] - PHIF @ BAtt - CONF
-            
-            # Smoothed mean and covariance
-            Amean = BAtt + (BPtt @ PHIF.T) @ inv_BPhat @ Bnut
-            Pmean = BPtt - (BPtt @ PHIF.T) @ inv_BPhat @ np.transpose(BPtt @ PHIF.T)
-            
+                    # Kalman gain and update
+                    sol_1 = (BPhat @ NZ.T) @ invert_matrix(BFt)
+                    BAt = Balphahat + sol_1 @ Bnut
+                    BPt = BPhat - sol_1 @ (BPhat @ NZ.T).T
+                else:
+                    # No observations, just prediction
+                    BAt = Balphahat
+                    BPt = BPhat
+                
+                # Store filtered state and covariance
+                BAt_mat[t, :] = BAt
+                BPt_mat[t, :] = BPt.reshape((1, kn**2), order="F")
+                        
+            # Draw from the posterior at final time point
+            AT_draw = np.zeros((Tnew + 1, kn))
+                        
             # Draw from multivariate normal
-            Pmchol = cholcovOrEigendecomp(Pmean)
-            AT_draw[-2-i, :] = np.transpose(Amean + Pmchol @ np.random.standard_normal(kn))        
-            
-        
-        ########## Balanced Dataset Smoothing ###########
-        # Kalman Smoother
-        #####################
-        
-        At_draw = np.zeros((nobs, Nstate * (p+1)))
-        for kk in range(p+1):
-            At_draw[nobs-1, kk * Nstate:(kk+1)*+Nstate] = AT_draw[0,(kk+1)*Nw + kk*Nstate:(kk+1)*(Nw+Nstate)]
-            
-        
-        for i in range(nobs-1):
-            Att = a_filtered[nobs-(i+2),:]#[:, np.newaxis]
-            Ptt = P_filtered2[nobs-(i+2),:].reshape(Nstate*(p+1), Nstate*(p+1), order = "F")
-            
-            
-            Phat = GAMMAs @ Ptt @ GAMMAs.T  + GAMMAu[:, :Nm] @ sigma_mm @ GAMMAu[:, :Nm].T + GAMMAu[:, Nm:Nm+Nq] @ sigma_qq @ GAMMAu[:, Nm:Nm+Nq].T
-            
-            Phat = 0.5*(Phat + Phat.T)
-            
-            inv_Phat = invert_matrix(Phat)
-            
-            nut = At_draw[nobs-(i+1), :] - GAMMAs @ Att - GAMMAz @ Z_t[nobs-1-(i+1)] - GAMMAc[:,0]
-
-            
-            temp = Ptt @ GAMMAs.T
-            Amean = Att + temp @ inv_Phat @ nut
-            Pmean = Ptt - temp @ inv_Phat @ np.transpose(temp)
-            
-            Pmchol = cholcovOrEigendecomp(Pmean)
-            At_draw[nobs-1-(i+1), :] = np.transpose(Amean + Pmchol @ np.random.standard_normal(Nstate*(p+1)))
+            Pchol = cholcovOrEigendecomp(BPt_mat[Tnobs-1, :].reshape((kn, kn), order="F"))
+            AT_draw[-1, :] = BAt_mat[Tnobs-1, :] + np.transpose(Pchol @ np.random.standard_normal(kn))
+                        
+            # Kalman Smoother
+            # -------------------
+            for i in range(Tnew):
+                # Get filtered state and covariance at time t
+                BAtt = BAt_mat[Tnobs-(i+2), :]
+                BPtt = BPt_mat[Tnobs-(i+2), :].reshape((kn, kn), order="F")
                 
-        # Minesota Prior                            
-        ########################
-        YY = np.vstack((np.hstack((YW[T0:nobs+T0], At_draw[:,:Nm], At_draw[:,Nm_states:Nm_states+Nq])), AT_draw[1:,:(Nw+Nstate)]))
+                # Prediction from t to t+1
+                BPhat = PHIF @ BPtt @ PHIF.T + SIGF
+                BPhat = 0.5 * (BPhat + BPhat.T)
+                
+                # Inverse of prediction covariance
+                inv_BPhat = invert_matrix(BPhat)
+                
+                # Innovation (difference between sampled state and prediction)
+                Bnut = AT_draw[-(i+1), :] - PHIF @ BAtt - CONF
+                
+                # Smoothed mean and covariance
+                Amean = BAtt + (BPtt @ PHIF.T) @ inv_BPhat @ Bnut
+                Pmean = BPtt - (BPtt @ PHIF.T) @ inv_BPhat @ np.transpose(BPtt @ PHIF.T)
+                
+                # Draw from multivariate normal
+                Pmchol = cholcovOrEigendecomp(Pmean)
+                AT_draw[-2-i, :] = np.transpose(Amean + Pmchol @ np.random.standard_normal(kn))        
+                
+            
+            ########## Balanced Dataset Smoothing ###########
+            # Kalman Smoother
+            #####################
+            
+            At_draw = np.zeros((nobs, Nstate * (p+1)))
+            for kk in range(p+1):
+                At_draw[nobs-1, kk * Nstate:(kk+1)*+Nstate] = AT_draw[0,(kk+1)*Nw + kk*Nstate:(kk+1)*(Nw+Nstate)]
+                
+            
+            for i in range(nobs-1):
+                Att = a_filtered[nobs-(i+2),:]#[:, np.newaxis]
+                Ptt = P_filtered2[nobs-(i+2),:].reshape(Nstate*(p+1), Nstate*(p+1), order = "F")
+                
+                
+                Phat = GAMMAs @ Ptt @ GAMMAs.T  + GAMMAu[:, :Nm] @ sigma_mm @ GAMMAu[:, :Nm].T + GAMMAu[:, Nm:Nm+Nq] @ sigma_qq @ GAMMAu[:, Nm:Nm+Nq].T
+                
+                Phat = 0.5*(Phat + Phat.T)
+                
+                inv_Phat = invert_matrix(Phat)
+                
+                nut = At_draw[nobs-(i+1), :] - GAMMAs @ Att - GAMMAz @ Z_t[nobs-1-(i+1)] - GAMMAc[:,0]
 
+                
+                temp = Ptt @ GAMMAs.T
+                Amean = Att + temp @ inv_Phat @ nut
+                Pmean = Ptt - temp @ inv_Phat @ np.transpose(temp)
+                
+                Pmchol = cholcovOrEigendecomp(Pmean)
+                At_draw[nobs-1-(i+1), :] = np.transpose(Amean + Pmchol @ np.random.standard_normal(Nstate*(p+1)))
+                    
+            # Minesota Prior                            
+            ########################
+            YY = np.vstack((np.hstack((YW[T0:nobs+T0], At_draw[:,:Nm], At_draw[:,Nm_states:Nm_states+Nq])), AT_draw[1:,:(Nw+Nstate)]))
+
+            
+            #save latent states
+            if (j%self.thining == 0):
+                j_temp = int(j/self.thining)
+                if j_temp > 0 :
+                    lstate_list[j_temp, :] = YY[:, Nw:]
+                else:
+                    lstate_list = np.zeros((math.ceil((self.nsim)/self.thining), YY.shape[0], Nm + Nq ))
+                    lstate_list[j_temp, :] = YY[:, Nw:]
+
+            
+            # 9. CALCULATE DUMMY OBSERVATIONS FOR MINNESOTA PRIOR
+            # ----------------------------------------------
+            
+            nobs_ = YY.shape[0] - p  # Adjusted for lags
+            spec = np.hstack((p, T0, self.nex, Ntotal, nobs_))
+            
+            # Calculate dummy observations for the VAR
+            YYact, YYdum, XXact, XXdum = calc_yyact(self.hyp, YY, spec)
         
-        #save latent states
-        if (j%self.thining == 0):
-            j_temp = int(j/self.thining)
-            if j_temp > 0 :
-                lstate_list[j_temp, :] = YY[:, Nw:]
+            # Store simulation results
+            if (j % self.thining == 0):
+                j_temp = int(j/self.thining)
+                if j_temp == 0:
+                    # Initialize storage
+                    YYactsim_list = np.zeros((math.ceil((self.nsim)/self.thining), rqw+1, Ntotal))
+                    XXactsim_list = np.zeros((math.ceil((self.nsim)/self.thining), rqw+1, Ntotal*p+1))
+                
+                # Store the combined data
+                YYactsim_list[j_temp, :, :] = YYact[-(rqw+1):, :]
+                XXactsim_list[j_temp, :, :] = XXact[-(rqw+1):, :]
+
+            # 10. VAR POSTERIOR SAMPLING
+            # ----------------------
+            
+
+            # Standard VAR posterior calculations
+            Tdummy, n = YYdum.shape
+            n = int(n)
+            Tdummy = int(Tdummy)
+            Tobs, n = YYact.shape
+            X = np.vstack((XXact, XXdum))
+            Y = np.vstack((YYact, YYdum))
+            T = Tobs + Tdummy
+            F = np.zeros((int(n*p), int(n*p)))
+            I = np.eye(n)
+            for i in range(p-1):
+                F[(i+1)*n:(i+2)*n, i*n:(i+1)*n] = I        
+            # Compute posterior parameters
+            vl, d, vr = np.linalg.svd(X, full_matrices=False)
+            vr = vr.T
+            di = 1/d
+            B = vl.T @ Y
+            xxi = (vr * np.tile(di.T, (Ntotal*p+1, 1)))
+            inv_x = xxi @ xxi.T
+            Phi_tilde = xxi @ B
+            
+            Sigma = (Y - X @ Phi_tilde).T @ (Y - X @ Phi_tilde)
+            sigma = invwishart.rvs(scale = Sigma, df = T-n*p-1)
+                
+                # Draw VAR coefficients and check stability
+            if check_explosive:
+                attempts = 0
+                while attempts < max_it_explosive:
+                    sigma_chol = cholcovOrEigendecomp(np.kron(sigma, inv_x))
+                    phi_new = np.squeeze(Phi_tilde.reshape(n*(n*p+1), 1, order="F")) + sigma_chol @ np.random.standard_normal(sigma_chol.shape[0])
+                    Phi = phi_new.reshape(n*p+1, n, order="F")
+                    if not is_explosive(Phi, n, p):
+                        break
+                    attempts += 1
+                if attempts == max_it_explosive:
+                    explosive_counter += 1
+                    print(f"Explosive VAR detected {explosive_counter} times.")
+                    if j == 0:
+                        restart_j0 = True
+                        break
+                    else:
+                        continue   
             else:
-                lstate_list = np.zeros((math.ceil((self.nsim)/self.thining), YY.shape[0], Nm + Nq ))
-                lstate_list[j_temp, :] = YY[:, Nw:]
+                sigma_chol = cholcovOrEigendecomp(np.kron(sigma, inv_x))
+                phi_new = np.squeeze(Phi_tilde.reshape(n*(n*p+1), 1, order="F")) + sigma_chol @ np.random.standard_normal(sigma_chol.shape[0])
+                Phi = phi_new.reshape(n*p+1, n, order="F") 
+                
+                
+            # Store posterior draws
+            if (j % self.thining == 0):
+                j_temp = int(j/self.thining)
+                Sigmap[j_temp, :, :] = sigma
+                Phip[j_temp, :, :] = Phi
+                Cons[j_temp, :] = Phi[-1, :]
+                valid_draws.append(j_temp)
+            
+            # Update state space matrices with new VAR parameters
+            # ----------------------------------------------
+            #Weekly equation coefficients (split by variable type)
+            phi_ww = np.zeros((Nw*p, Nw))
+            phi_wm = np.zeros((Nm*p, Nw))
+            phi_wq = np.zeros((Nq*p, Nw))
+            for i in range(p):
+                # Weekly variables affecting weekly variables
+                phi_ww[Nw*i:Nw*(i+1), :] = Phi[i*Ntotal:i*Ntotal+Nw, :Nw]
 
+                # Monthly variables affecting weekly variables
+                phi_wm[Nm*i:Nm*(i+1), :] = Phi[i*Ntotal+Nw:i*Ntotal+Nw+Nm, :Nw]
+
+                # Quarterly variables affecting weekly variables
+                phi_wq[Nq*i:Nq*(i+1), :] = Phi[i*Ntotal+Nw+Nm:i*Ntotal+Ntotal, :Nw]
+
+            # Weekly constant term
+            phi_wc = Phi[-1, :Nw, np.newaxis]
+
+            # Monthly equation coefficients (split by variable type)
+            phi_mw = np.zeros((Nw*p, Nm))
+            phi_mm = np.zeros((Nm*p, Nm))
+            phi_mq = np.zeros((Nq*p, Nm))
+            for i in range(p):
+                # Weekly variables affecting monthly variables
+                phi_mw[Nw*i:Nw*(i+1), :] = Phi[i*Ntotal:i*Ntotal+Nw, Nw:Nw+Nm]
+                
+                # Monthly variables affecting monthly variables
+                phi_mm[Nm*i:Nm*(i+1), :] = Phi[i*Ntotal+Nw:i*Ntotal+Nw+Nm, Nw:Nw+Nm]
+                
+                # Quarterly variables affecting monthly variables
+                phi_mq[Nq*i:Nq*(i+1), :] = Phi[i*Ntotal+Nw+Nm:i*Ntotal+Ntotal, Nw:Nw+Nm]
+
+            # Monthly constant term
+            phi_mc = Phi[-1, Nw:Nw+Nm, np.newaxis]
+
+            # Quarterly equation coefficients (split by variable type)
+            phi_qw = np.zeros((Nw*p, Nq))
+            phi_qm = np.zeros((Nm*p, Nq))
+            phi_qq = np.zeros((Nq*p, Nq))
+            for i in range(p):
+                # Weekly variables affecting quarterly variables
+                phi_qw[Nw*i:Nw*(i+1), :] = Phi[i*Ntotal:i*Ntotal+Nw, Nw+Nm:Ntotal]
+                
+                # Monthly variables affecting quarterly variables
+                phi_qm[Nm*i:Nm*(i+1), :] = Phi[i*Ntotal+Nw:i*Ntotal+Nw+Nm, Nw+Nm:Ntotal]
+                
+                # Quarterly variables affecting quarterly variables
+                phi_qq[Nq*i:Nq*(i+1), :] = Phi[i*Ntotal+Nw+Nm:i*Ntotal+Ntotal, Nw+Nm:Ntotal]
+
+            # Quarterly constant term
+            phi_qc = Phi[-1, Nw+Nm:Ntotal, np.newaxis]
+            
+            # Extract covariance matrix blocks
+            # ------------------------------
+            # Weekly variances
+            sigma_ww = sigma[:Nw, :Nw]
+
+            # Monthly variances
+            sigma_mm = sigma[Nw:Nw+Nm, Nw:Nw+Nm]
+
+            # Quarterly variances  
+            sigma_qq = sigma[Nw+Nm:, Nw+Nm:]
+
+            
+            # Cross-covariances with symmetry enforcement
+            # Weekly-Monthly cross-covariance (enforce symmetry)
+            sigma_wm = 0.5 * (sigma[:Nw, Nw:Nw+Nm] + sigma[Nw:Nw+Nm, :Nw].T)
+            sigma_mw = sigma_wm.T  # Transpose for symmetry
+            
+            # Weekly-Quarterly cross-covariance (enforce symmetry)
+            sigma_wq = 0.5 * (sigma[:Nw, Nw+Nm:] + sigma[Nw+Nm:, :Nw].T)
+            sigma_qw = sigma_wq.T  # Transpose for symmetry
+            
+            # Monthly-Quarterly cross-covariance (enforce symmetry)
+            sigma_mq = 0.5 * (sigma[Nw:Nw+Nm, Nw+Nm:] + sigma[Nw+Nm:, Nw:Nw+Nm].T)
+            sigma_qm = sigma_mq.T  # Transpose for symmetry
+            
+            # Update transition matrices
+            # -------------------------
+            
+            # Monthly state transition
+
+
+            
+            GAMMAz_m = np.vstack((
+                np.transpose(phi_mw), 
+                np.zeros((p*Nm, p*Nw))
+            ))
+            GAMMAc_m = np.vstack((
+                phi_mc, 
+                np.zeros((p*Nm, 1))
+            ))
+
+            GAMMAz_q = np.vstack((
+                np.transpose(phi_qw), 
+                np.zeros((p*Nq, p*Nw))
+            ))
+            GAMMAc_q = np.vstack((
+                phi_qc, 
+                np.zeros((p*Nq, 1))
+            ))
+            
+            GAMMAz = np.vstack((GAMMAz_m, GAMMAz_q))
+            GAMMAc = np.vstack((GAMMAc_m, GAMMAc_q))
+
+            # Combined state transition matrix for all variables
+            GAMMAs_m = np.vstack((
+                np.hstack((np.transpose(phi_mm), np.zeros((Nm, Nm)))), 
+                np.hstack((np.eye(p*Nm), np.zeros((p*Nm, Nm))))
+            ))
+            # Quarterly state transition
+            GAMMAs_q = np.vstack((
+                np.hstack((np.transpose(phi_qq), np.zeros((Nq, Nq)))), 
+                np.hstack((np.eye(p*Nq), np.zeros((p*Nq, Nq))))
+            ))
+            GAMMAs = np.zeros((state_size, state_size))
         
-        # 9. CALCULATE DUMMY OBSERVATIONS FOR MINNESOTA PRIOR
-        # ----------------------------------------------
-        
-        nobs_ = YY.shape[0] - p  # Adjusted for lags
-        spec = np.hstack((p, T0, self.nex, Ntotal, nobs_))
-        
-        # Calculate dummy observations for the VAR
-        YYact, YYdum, XXact, XXdum = calc_yyact(self.hyp, YY, spec)
-    
-        # Store simulation results
-        if (j % self.thining == 0):
-            j_temp = int(j/self.thining)
-            if j_temp == 0:
-                # Initialize storage
-                YYactsim_list = np.zeros((math.ceil((self.nsim)/self.thining), rqw+1, Ntotal))
-                XXactsim_list = np.zeros((math.ceil((self.nsim)/self.thining), rqw+1, Ntotal*p+1))
-            
-            # Store the combined data
-            YYactsim_list[j_temp, :, :] = YYact[-(rqw+1):, :]
-            XXactsim_list[j_temp, :, :] = XXact[-(rqw+1):, :]
+            # Monthly block
+            GAMMAs[:Nm_states, :Nm_states] = GAMMAs_m
 
-        # 10. VAR POSTERIOR SAMPLING
-        # ----------------------
-        
+            # Quarterly block
+            GAMMAs[Nm_states:, Nm_states:] = GAMMAs_q
 
-        # Standard VAR posterior calculations
-        Tdummy, n = YYdum.shape
-        n = int(n)
-        Tdummy = int(Tdummy)
-        Tobs, n = YYact.shape
-        X = np.vstack((XXact, XXdum))
-        Y = np.vstack((YYact, YYdum))
-        T = Tobs + Tdummy
-        F = np.zeros((int(n*p), int(n*p)))
-        I = np.eye(n)
-        for i in range(p-1):
-            F[(i+1)*n:(i+2)*n, i*n:(i+1)*n] = I        
-        # Compute posterior parameters
-        vl, d, vr = np.linalg.svd(X, full_matrices=False)
-        vr = vr.T
-        di = 1/d
-        B = vl.T @ Y
-        xxi = (vr * np.tile(di.T, (Ntotal*p+1, 1)))
-        inv_x = xxi @ xxi.T
-        Phi_tilde = xxi @ B
-        
-        Sigma = (Y - X @ Phi_tilde).T @ (Y - X @ Phi_tilde)
-        sigma = invwishart.rvs(scale = Sigma, df = T-n*p-1)
-            
-            # Draw VAR coefficients and check stability
-        attempts = 0
-        while attempts < 1000:
-            sigma_chol = cholcovOrEigendecomp(np.kron(sigma, inv_x))
-            phi_new = np.squeeze(Phi_tilde.reshape(n*(n*p+1), 1, order="F")) + sigma_chol @ np.random.standard_normal(sigma_chol.shape[0])
-            Phi = phi_new.reshape(n*p+1, n, order="F")
-            if not is_explosive(Phi, n, p):
-                break
-            attempts += 1
-        if attempts == 1000:
-            explosive_counter += 1
-            print(f"Explosive VAR detected {explosive_counter} times.")
-            m = 0
-            if j == 0:
-                j -= 1
-            continue
-            
-            
-        # Store posterior draws
-        if (j % self.thining == 0):
-            j_temp = int(j/self.thining)
-            Sigmap[j_temp, :, :] = sigma
-            Phip[j_temp, :, :] = Phi
-            Cons[j_temp, :] = Phi[-1, :]
-            valid_draws.append(j_temp)
-        
-        # Update state space matrices with new VAR parameters
-        # ----------------------------------------------
-        #Weekly equation coefficients (split by variable type)
-        phi_ww = np.zeros((Nw*p, Nw))
-        phi_wm = np.zeros((Nm*p, Nw))
-        phi_wq = np.zeros((Nq*p, Nw))
-        for i in range(p):
-            # Weekly variables affecting weekly variables
-            phi_ww[Nw*i:Nw*(i+1), :] = Phi[i*Ntotal:i*Ntotal+Nw, :Nw]
-
-            # Monthly variables affecting weekly variables
-            phi_wm[Nm*i:Nm*(i+1), :] = Phi[i*Ntotal+Nw:i*Ntotal+Nw+Nm, :Nw]
-
-            # Quarterly variables affecting weekly variables
-            phi_wq[Nq*i:Nq*(i+1), :] = Phi[i*Ntotal+Nw+Nm:i*Ntotal+Ntotal, :Nw]
-
-        # Weekly constant term
-        phi_wc = Phi[-1, :Nw, np.newaxis]
-
-        # Monthly equation coefficients (split by variable type)
-        phi_mw = np.zeros((Nw*p, Nm))
-        phi_mm = np.zeros((Nm*p, Nm))
-        phi_mq = np.zeros((Nq*p, Nm))
-        for i in range(p):
-            # Weekly variables affecting monthly variables
-            phi_mw[Nw*i:Nw*(i+1), :] = Phi[i*Ntotal:i*Ntotal+Nw, Nw:Nw+Nm]
-            
-            # Monthly variables affecting monthly variables
-            phi_mm[Nm*i:Nm*(i+1), :] = Phi[i*Ntotal+Nw:i*Ntotal+Nw+Nm, Nw:Nw+Nm]
-            
-            # Quarterly variables affecting monthly variables
-            phi_mq[Nq*i:Nq*(i+1), :] = Phi[i*Ntotal+Nw+Nm:i*Ntotal+Ntotal, Nw:Nw+Nm]
-
-        # Monthly constant term
-        phi_mc = Phi[-1, Nw:Nw+Nm, np.newaxis]
-
-        # Quarterly equation coefficients (split by variable type)
-        phi_qw = np.zeros((Nw*p, Nq))
-        phi_qm = np.zeros((Nm*p, Nq))
-        phi_qq = np.zeros((Nq*p, Nq))
-        for i in range(p):
-            # Weekly variables affecting quarterly variables
-            phi_qw[Nw*i:Nw*(i+1), :] = Phi[i*Ntotal:i*Ntotal+Nw, Nw+Nm:Ntotal]
-            
+            # Cross-influence between monthly and quarterly states
             # Monthly variables affecting quarterly variables
-            phi_qm[Nm*i:Nm*(i+1), :] = Phi[i*Ntotal+Nw:i*Ntotal+Nw+Nm, Nw+Nm:Ntotal]
+            GAMMAs[Nm_states:Nm_states+Nq, :Nm] = np.transpose(phi_qm[:Nm, :])
+
+            # Quarterly variables affecting monthly variables
+            GAMMAs[:Nm, Nm_states:Nm_states+Nq] = np.transpose(phi_mq[:Nq, :])
             
-            # Quarterly variables affecting quarterly variables
-            phi_qq[Nq*i:Nq*(i+1), :] = Phi[i*Ntotal+Nw+Nm:i*Ntotal+Ntotal, Nw+Nm:Ntotal]
-
-        # Quarterly constant term
-        phi_qc = Phi[-1, Nw+Nm:Ntotal, np.newaxis]
+            # 5. Update measurement equation matrices if needed
+            # For the unified approach, LAMBDAs matrices might need updating if they depend on VAR coefficients
+            # If your temporal aggregation constraints are static, you don't need to update them
+            LAMBDAs_w = np.hstack((np.zeros((Nw,Nm)), np.transpose(phi_wm), np.zeros((Nw,Nq)) ,np.transpose(phi_wq)))
+            LAMBDAz_w = np.transpose(phi_ww)
+            LAMBDAc_w = phi_wc
         
-        # Extract covariance matrix blocks
-        # ------------------------------
-        # Weekly variances
-        sigma_ww = sigma[:Nw, :Nw]
-
-        # Monthly variances
-        sigma_mm = sigma[Nw:Nw+Nm, Nw:Nw+Nm]
-
-        # Quarterly variances  
-        sigma_qq = sigma[Nw+Nm:, Nw+Nm:]
-
-        
-        # Cross-covariances with symmetry enforcement
-        # Weekly-Monthly cross-covariance (enforce symmetry)
-        sigma_wm = 0.5 * (sigma[:Nw, Nw:Nw+Nm] + sigma[Nw:Nw+Nm, :Nw].T)
-        sigma_mw = sigma_wm.T  # Transpose for symmetry
-        
-        # Weekly-Quarterly cross-covariance (enforce symmetry)
-        sigma_wq = 0.5 * (sigma[:Nw, Nw+Nm:] + sigma[Nw+Nm:, :Nw].T)
-        sigma_qw = sigma_wq.T  # Transpose for symmetry
-        
-        # Monthly-Quarterly cross-covariance (enforce symmetry)
-        sigma_mq = 0.5 * (sigma[Nw:Nw+Nm, Nw+Nm:] + sigma[Nw+Nm:, Nw:Nw+Nm].T)
-        sigma_qm = sigma_mq.T  # Transpose for symmetry
-        
-        # Update transition matrices
-        # -------------------------
-        
-        # Monthly state transition
-
-
-        
-        GAMMAz_m = np.vstack((
-            np.transpose(phi_mw), 
-            np.zeros((p*Nm, p*Nw))
-        ))
-        GAMMAc_m = np.vstack((
-            phi_mc, 
-            np.zeros((p*Nm, 1))
-        ))
-
-        GAMMAz_q = np.vstack((
-            np.transpose(phi_qw), 
-            np.zeros((p*Nq, p*Nw))
-        ))
-        GAMMAc_q = np.vstack((
-            phi_qc, 
-            np.zeros((p*Nq, 1))
-        ))
-        
-        GAMMAz = np.vstack((GAMMAz_m, GAMMAz_q))
-        GAMMAc = np.vstack((GAMMAc_m, GAMMAc_q))
-
-        # Combined state transition matrix for all variables
-        GAMMAs_m = np.vstack((
-            np.hstack((np.transpose(phi_mm), np.zeros((Nm, Nm)))), 
-            np.hstack((np.eye(p*Nm), np.zeros((p*Nm, Nm))))
-        ))
-        # Quarterly state transition
-        GAMMAs_q = np.vstack((
-            np.hstack((np.transpose(phi_qq), np.zeros((Nq, Nq)))), 
-            np.hstack((np.eye(p*Nq), np.zeros((p*Nq, Nq))))
-        ))
-        GAMMAs = np.zeros((state_size, state_size))
-    
-        # Monthly block
-        GAMMAs[:Nm_states, :Nm_states] = GAMMAs_m
-
-        # Quarterly block
-        GAMMAs[Nm_states:, Nm_states:] = GAMMAs_q
-
-        # Cross-influence between monthly and quarterly states
-        # Monthly variables affecting quarterly variables
-        GAMMAs[Nm_states:Nm_states+Nq, :Nm] = np.transpose(phi_qm[:Nm, :])
-
-        # Quarterly variables affecting monthly variables
-        GAMMAs[:Nm, Nm_states:Nm_states+Nq] = np.transpose(phi_mq[:Nq, :])
-        
-        # 5. Update measurement equation matrices if needed
-        # For the unified approach, LAMBDAs matrices might need updating if they depend on VAR coefficients
-        # If your temporal aggregation constraints are static, you don't need to update them
-        LAMBDAs_w = np.hstack((np.zeros((Nw,Nm)), np.transpose(phi_wm), np.zeros((Nw,Nq)) ,np.transpose(phi_wq)))
-        LAMBDAz_w = np.transpose(phi_ww)
-        LAMBDAc_w = phi_wc
-        
+        if restart_j0:
+            j = -1  # Will be incremented to 0 at the next iteration of the j loop
+            should_restart = True
+            continue   
 
 
     
