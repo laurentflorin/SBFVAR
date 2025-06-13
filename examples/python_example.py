@@ -46,7 +46,7 @@ mufbvar_data = SBFVAR.sbfvar_data(data, trans, frequencies)
 model =  SBFVAR.multifrequency_var(nsim, nburn, nlags, thining)
 
 # Estimate the model
-model.fit(mufbvar_data, hyp = hyp, var_of_interest = None,  temp_agg = 'mean')
+model.fit(mufbvar_data, hyp = hyp, var_of_interest = None,  temp_agg = 'mean', check_explosive=False)
 
 # Create forecasts in highest frequency
 model.forecast(H)
