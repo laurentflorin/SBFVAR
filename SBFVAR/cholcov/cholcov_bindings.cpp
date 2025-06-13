@@ -1,6 +1,6 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/eigen.h>
-#include "cholcov.cpp"
+#include "cholcov.h"
 
 namespace py = pybind11;
 
