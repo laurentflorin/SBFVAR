@@ -21,7 +21,7 @@ import plotly.express as px
 import pickle
 import copy
 from scipy.linalg import block_diag  
-
+from sklearn.utils.extmath import randomized_svd
 
 from .cholcov.cholcov_module import cholcovOrEigendecomp
 from .inverse.matrix_inversion import invert_matrix
@@ -710,7 +710,10 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_e
             for i in range(p-1):
                 F[(i+1)*n:(i+2)*n, i*n:(i+1)*n] = I        
             # Compute posterior parameters
-            vl, d, vr = np.linalg.svd(X, full_matrices=False)
+            
+            #vl, d, vr = np.linalg.svd(X, full_matrices=False)
+            vl, d, vr = randomized_svd(X, n_components=min(X.shape)-1)
+
             vr = vr.T
             di = 1/d
             B = vl.T @ Y
