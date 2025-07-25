@@ -127,7 +127,14 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_e
     # Number of observations after burn-in (T0 = initial lag period)
     T0 = int(nlags)  # Initial observations used for lags
     nobs = min(YM.shape[0]-T0, YQ.shape[0]-T0)  # Effective sample size in weeks
+
+    df_Q = pd.DataFrame(YQ)
+    df_M = pd.DataFrame(YM)
+    df_W = pd.DataFrame(YW)
+
+    YDATA = pd.concat([df_W, df_M, df_Q], axis=1).values
     
+    index_NY = np.isnan(YDATA[nobs+T0:Tnobs+T0]).T
     # STATE SPACE MODEL STRUCTURE
     # ---------------------------
     
@@ -555,14 +562,14 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_e
                         
             # Filter Loop
             # --------------------
-            for t in range(nobs, Tnobs-T0):
+            for t in range(nobs, Tnobs):
                 # Index relative to forecast start
                 kkk = t - nobs
                 
                 # Define new data (ND) and new Z matrix (NZ)
-                ND_indices = ~index_NY[:, kkk]
-                ND = YDATA_forecast[kkk, ND_indices] if np.any(ND_indices) else np.array([])
-                NZ = ZZ[ND_indices, :] if np.any(ND_indices) else np.empty((0, kn))
+                ND_indices = ~index_NY[:,kkk]
+                ND = YDATA[nobs+T0+kkk][~np.isnan(YDATA[nobs+T0+kkk])]
+                NZ = ZZ[ND_indices, :]
                 
                 # Previous state and covariance
                 BAt1 = BAt_mat[t-1, :]
@@ -662,6 +669,11 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_e
             YY = np.vstack((np.hstack((YW[T0:nobs+T0], At_draw[:,:Nm], At_draw[:,Nm_states:Nm_states+Nq])), AT_draw[1:,:(Nw+Nstate)]))
 
             
+            
+            # Save latent states (only for the in-sample period, not forecast/simulation)
+            latent_states_in_sample = np.hstack([At_draw[:, :Nm], At_draw[:, Nm_states:Nm_states+Nq]])
+            
+            
             #save latent states
             if (j%self.thining == 0):
                 j_temp = int(j/self.thining)
@@ -712,7 +724,7 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_e
             # Compute posterior parameters
             
             #vl, d, vr = np.linalg.svd(X, full_matrices=False)
-            vl, d, vr = randomized_svd(X, n_components=min(X.shape)-1)
+            vl, d, vr = np.linalg.svd(X, full_matrices=False)
 
             vr = vr.T
             di = 1/d
