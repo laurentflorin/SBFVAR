@@ -11,7 +11,7 @@ io_data = "/home/u80856195/git/SBFVAR/examples/hist_small.xlsx"
 
 #Model Specification
 H = 96          # forecast horizon
-nsim = 20      # number of draws from Posterior Density
+nsim = 1000     # number of draws from Posterior Density
 nburn = 0.5     # number of draws to discard
 nlags = 12   # Number of lags
 thining = 1     # Thining 

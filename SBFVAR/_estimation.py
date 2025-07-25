@@ -127,6 +127,11 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_e
     # Number of observations after burn-in (T0 = initial lag period)
     T0 = int(nlags)  # Initial observations used for lags
     nobs = min(YM.shape[0]-T0, YQ.shape[0]-T0)  # Effective sample size in weeks
+    
+    Tstar = YW.shape[0] - T0
+    # Define forecast horizons consistent with MUFBVAR approach
+    Tnew = Tstar - nobs  # Number of periods to forecast
+    Tnobs = nobs + Tnew
 
     df_Q = pd.DataFrame(YQ)
     df_M = pd.DataFrame(YM)
