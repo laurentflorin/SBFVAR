@@ -1,19 +1,21 @@
+from pathlib import Path
 from setuptools import setup, Extension
 import pybind11
 
-eigen_include = "/home/u80856195/git/eigen"
+# Use vendored Eigen headers to avoid system-level dependency.
+eigen_include = Path(__file__).resolve().parent.parent / "third_party" / "eigen"
 
 ext_modules = [
     Extension(
-        "cholcov",
+        "cholcov_module",
         sources=["cholcov.cpp", "cholcov_bindings.cpp"],
-        include_dirs=[pybind11.get_include(), eigen_include],
+        include_dirs=[pybind11.get_include(), str(eigen_include)],
         language="c++",
     ),
 ]
 
 setup(
-    name="cholcov",
+    name="cholcov_module",
     version="0.1",
     ext_modules=ext_modules,
 )
