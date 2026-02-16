@@ -71,7 +71,7 @@ class sbfvar_data:
         # Process data for each frequency (except the lowest)
         for i in range(1, len(frequencies)):
             YMX_list.append(data[i])
-            YM0_list.append(data[i].to_numpy())
+            YM0_list.append(data[i].to_numpy(copy=True))
             select_m_list.append(trans[i])
             vars_m_list.append(data[i].columns[:])
             YMh_list.append(data[i].to_numpy())
@@ -92,7 +92,7 @@ class sbfvar_data:
         select_q = deque()
         
         YQX_list.append(data[0])
-        YQ0_list.append(YQX_list[-1].to_numpy())
+        YQ0_list.append(YQX_list[-1].to_numpy(copy=True))
         select_q.append(trans[0])
         vars_q = YQX_list[0].columns[:]
         

@@ -242,13 +242,13 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_e
 
 
     # 2.2. Monthly temporal aggregation constraints
-    LAMBDAs_m = np.hstack((np.tile(np.eye(Nm), rmw), np.zeros((Nm,state_size - (rmw*Nm)))))*1/4
+    LAMBDAs_m = np.hstack((np.tile(np.eye(Nm), rmw), np.zeros((Nm,state_size - (rmw*Nm)))))*(1/rmw)
     LAMBDAz_m = np.zeros((Nm, Z_t_size))
     LAMBDAc_m = np.zeros((Nm, 1))
 
 
     # 2.3. Quarterly temporal aggregation constraints (if monthly-to-quarterly aggregation needed)
-    LAMBDAs_q = np.hstack((np.hstack(((np.zeros((Nq, (p+1) * Nm)), np.tile(np.eye(Nq), rqw)))),np.zeros((Nq,state_size - (rqw*Nq+(p+1)*Nm)))))*1/12
+    LAMBDAs_q = np.hstack((np.hstack(((np.zeros((Nq, (p+1) * Nm)), np.tile(np.eye(Nq), rqw)))),np.zeros((Nq,state_size - (rqw*Nq+(p+1)*Nm)))))*(1/rqw)
     LAMBDAz_q = np.zeros((Nq, Z_t_size))
     LAMBDAc_q = np.zeros((Nq, 1))
 
@@ -351,6 +351,8 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_e
                 # Check if this is a period with low-frequency observations
                 is_quarter_end = q_obs_periods[w_idx] if w_idx < len(q_obs_periods) else False
                 is_month_end = m_obs_periods[w_idx] if w_idx < len(m_obs_periods) else False
+                m_idx = w_idx // rmw  # monthly index aligned to week
+                q_idx = w_idx // rqw  # quarterly index aligned to week
                 
                 # PREDICTION STEP
                 # ---------------
@@ -369,17 +371,15 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_e
                 LAMBDAs_list = []
                 LAMBDAc_list = []
                 LAMBDAz_list = []
-                LAMBDAu_list = []
+                obs_blocks = []  # track which covariance block applies
                 y_obs = []
                 # Weekly observations (if available)
                 if Nw > 0 and w_idx < Tw:
                     LAMBDAs_list.append(LAMBDAs_w)
                     LAMBDAc_list.append(LAMBDAc_w)
                     LAMBDAz_list.append(LAMBDAz_w)
-                    #LAMBDAu_list.append(LAMBDAu_w)
                     y_obs.append(YW[w_idx])
-                    LAMBDAu = LAMBDAu_w
-                    sigma_t = sigma_ww            
+                    obs_blocks.append('w')
                     
                 
                 # Monthly observations (if at month end)
@@ -390,12 +390,7 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_e
                         LAMBDAs_list.append(LAMBDAs_m)
                         LAMBDAc_list.append(np.zeros((Nm, 1)))
                         LAMBDAz_list.append(LAMBDAz_m)
-                        #LAMBDAu_list.append(LAMBDAu_m)
-                        LAMBDAu = LAMBDAu_m
-                        sigma_t = np.block([
-                            [sigma_ww, sigma_wm],
-                            [sigma_mw, sigma_mm]
-                        ])
+                        obs_blocks.append('m')
 
 
                 # Quarterly observations (if at quarter end)
@@ -406,55 +401,50 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_e
                         LAMBDAs_list.append(LAMBDAs_q)
                         LAMBDAc_list.append(np.zeros((Nq, 1)))
                         LAMBDAz_list.append(LAMBDAz_q)
-                        #LAMBDAu_list.append(LAMBDAu_q )
-                        LAMBDAu = LAMBDAu_q
-                        sigma_t = np.block([
-                            [sigma_ww, sigma_wm, sigma_wq],
-                            [sigma_mw, sigma_mm, sigma_mq],
-                            [sigma_qw, sigma_qm, sigma_qq]
-                        ])          
+                        obs_blocks.append('q')        
                 
                 # Combine measurement components
                 if LAMBDAs_list:
                     LAMBDAs = np.vstack(LAMBDAs_list)
                     LAMBDAc = np.vstack(LAMBDAc_list)
                     LAMBDAz = np.vstack(LAMBDAz_list)
-                    #LAMBDAu = np.vstack(LAMBDAu_list)
                     y = np.concatenate(y_obs)
+                    # Build measurement noise covariance consistent with stacked obs
+                    obs_size = y.shape[0]
+                    sigma_t = np.zeros((obs_size, obs_size))
+                    cov_map = {
+                        ('w', 'w'): sigma_ww,
+                        ('w', 'm'): sigma_wm,
+                        ('w', 'q'): sigma_wq,
+                        ('m', 'w'): sigma_mw,
+                        ('m', 'm'): sigma_mm,
+                        ('m', 'q'): sigma_mq,
+                        ('q', 'w'): sigma_qw,
+                        ('q', 'm'): sigma_qm,
+                        ('q', 'q'): sigma_qq,
+                    }
+                    start_i = 0
+                    for ib, b1 in enumerate(obs_blocks):
+                        size_i = y_obs[ib].shape[0]
+                        start_j = 0
+                        for jb, b2 in enumerate(obs_blocks):
+                            size_j = y_obs[jb].shape[0]
+                            sigma_t[start_i:start_i+size_i, start_j:start_j+size_j] = cov_map[(b1, b2)]
+                            start_j += size_j
+                        start_i += size_i
+
                     # MEASUREMENT UPDATE
                     # -----------------
-                    
-                    # Measurement prediction
                     y_hat = LAMBDAs @ a_pred + LAMBDAz @ Z_t[t,:] + LAMBDAc.flatten()
                     nu = y - y_hat
-                    
-                    # First term: prediction covariance 
-                    S = (LAMBDAs @ P_pred @ LAMBDAs.T +                            # Prediction covariance
-                        LAMBDAu @ sigma_ww @ LAMBDAu.T +                          # Weekly measurement error
-                        
-                        # Monthly cross-terms (both directions)
-                        LAMBDAs @ GAMMAu[:, :Nm] @ sigma_mw @ LAMBDAu.T +         # Monthly to measurement
-                        LAMBDAu @ sigma_wm @ GAMMAu[:, :Nm].T @ LAMBDAs.T +       # Measurement to monthly
-                        
-                        # Quarterly cross-terms (both directions)
-                        LAMBDAs @ GAMMAu[:, Nm:] @ sigma_qw @ LAMBDAu.T +         # Quarterly to measurement
-                        LAMBDAu @ sigma_wq @ GAMMAu[:, Nm:].T @ LAMBDAs.T# +       # Measurement to quarterly
-                    )
-                    #TODO There are no monthly quarterly cross terms, OK? or Xi and S
-                    # Ensure symmetry
+
+                    S = LAMBDAs @ P_pred @ LAMBDAs.T + sigma_t
                     S = 0.5 * (S + S.T)
-                    Xi = LAMBDAs @ P_pred + LAMBDAu @ sigma_wm @ GAMMAu[:, :Nm].T + LAMBDAu @ sigma_wq @ GAMMAu[:, Nm:].T
-                    
-                    # Calculate Kalman gain
+                    Xi = LAMBDAs @ P_pred
+
                     K = Xi.T @ invert_matrix(S)
-
-                    # Update state estimate
                     a_t = a_pred + K @ nu
-
-                    # Update state covariance
                     P_t = P_pred - K @ Xi
-
-                    # Ensure symmetry of P_t
                     P_t = 0.5 * (P_t + P_t.T)
                 else:
                     # No observations - just prediction
@@ -979,6 +969,7 @@ def forecast(self, H, conditionals = None):
     
     '''
     self.H = H
+    Ntotal = self.Nm + self.Nq + self.Nw
     # First we need to extend the index
     # depending on the highest frequencies the approach differs
     
@@ -1139,19 +1130,19 @@ def forecast(self, H, conditionals = None):
 
     #median
     YYftr_med = np.nanmedian(YYvector_ml, axis = 0)
-    YYftr_med[:, (self.select == 1)] = 100 * YYftr_m[:, (self.select == 1)]
-    YYftr_med[:, (self.select == 0)] = np.exp(YYftr_m[:, (self.select == 0)])
+    YYftr_med[:, (self.select == 1)] = 100 * YYftr_med[:, (self.select == 1)]
+    YYftr_med[:, (self.select == 0)] = np.exp(YYftr_med[:, (self.select == 0)])
     
     YYnow_med = np.nanmedian(self.YYactsim_list[self.valid_draws,1:(self.rqw+1),:self.Nw], axis = 0) # actual/nowcast weeklies
     if YYnow_med.size:
-        YYnow_med[:, (self.select_w== 1)] = 100 * YYnow_m[:, (self.select_w == 1)]
-        YYnow_med[:, (self.select_w == 0)] = np.exp(YYnow_m[:,(self.select_w == 0)])
+        YYnow_med[:, (self.select_w== 1)] = 100 * YYnow_med[:, (self.select_w == 1)]
+        YYnow_med[:, (self.select_w == 0)] = np.exp(YYnow_med[:,(self.select_w == 0)])
     
     lstate_med = np.nanmedian(self.lstate_list[self.valid_draws,:,:], axis = 0)# hf obs for lf vars
     lstate_med[:, (self.select_m_q == 1)] = 100 * lstate_med[:, (self.select_m_q == 1)]
     lstate_med[:, (self.select_m_q == 0)] = np.exp(lstate_med[:, (self.select_m_q == 0)])
     
-    YY_med = np.vstack((np.vstack((np.hstack((YW, lstate_m[:-(self.rqw),:])), np.hstack((YYnow_m, lstate_med[-self.rqw:,:])))), YYftr_m))
+    YY_med = np.vstack((np.vstack((np.hstack((YW, lstate_med[:-(self.rqw),:])), np.hstack((YYnow_med, lstate_med[-self.rqw:,:])))), YYftr_med))
 
     # 95%
     YYftr_095 = np.nanquantile(YYvector_ml,  q = 0.95, axis = 0)
@@ -1167,7 +1158,7 @@ def forecast(self, H, conditionals = None):
     lstate_095[:, (self.select_m_q == 1)] = 100 * lstate_095[:, (self.select_m_q == 1)]
     lstate_095[:, (self.select_m_q == 0)] = np.exp(lstate_095[:, (self.select_m_q == 0)])
     
-    YY_095 = np.vstack((np.vstack((np.hstack((YW, lstate_095[:-(self.rqw),:])), np.hstack((YYnow_m, lstate_095[-self.rqw:,:])))), YYftr_m))
+    YY_095 = np.vstack((np.vstack((np.hstack((YW, lstate_095[:-(self.rqw),:])), np.hstack((YYnow_095, lstate_095[-self.rqw:,:])))), YYftr_095))
 
     # 84%
     YYftr_084 = np.nanquantile(YYvector_ml,  q = 0.84, axis = 0)
@@ -1183,7 +1174,7 @@ def forecast(self, H, conditionals = None):
     lstate_084[:, (self.select_m_q == 1)] = 100 * lstate_084[:, (self.select_m_q == 1)]
     lstate_084[:, (self.select_m_q == 0)] = np.exp(lstate_084[:, (self.select_m_q == 0)])
     
-    YY_084 = np.vstack((np.vstack((np.hstack((YW, lstate_084[:-(self.rqw),:])), np.hstack((YYnow_m, lstate_084[-self.rqw:,:])))), YYftr_m))
+    YY_084 = np.vstack((np.vstack((np.hstack((YW, lstate_084[:-(self.rqw),:])), np.hstack((YYnow_084, lstate_084[-self.rqw:,:])))), YYftr_084))
 
 
     # 16%
@@ -1200,7 +1191,7 @@ def forecast(self, H, conditionals = None):
     lstate_016[:, (self.select_m_q == 1)] = 100 * lstate_016[:, (self.select_m_q == 1)]
     lstate_016[:, (self.select_m_q == 0)] = np.exp(lstate_016[:, (self.select_m_q == 0)])
     
-    YY_016 = np.vstack((np.vstack((np.hstack((YW, lstate_016[:-(self.rqw),:])), np.hstack((YYnow_m, lstate_016[-self.rqw:,:])))), YYftr_m))
+    YY_016 = np.vstack((np.vstack((np.hstack((YW, lstate_016[:-(self.rqw),:])), np.hstack((YYnow_016, lstate_016[-self.rqw:,:])))), YYftr_016))
         
     # 5%
     YYftr_005 = np.nanquantile(YYvector_ml,  q = 0.05, axis = 0)
@@ -1216,7 +1207,7 @@ def forecast(self, H, conditionals = None):
     lstate_005[:, (self.select_m_q == 1)] = 100 * lstate_005[:, (self.select_m_q == 1)]
     lstate_005[:, (self.select_m_q == 0)] = np.exp(lstate_005[:, (self.select_m_q == 0)])
     
-    YY_005 = np.vstack((np.vstack((np.hstack((YW, lstate_005[:-(self.rqw),:])), np.hstack((YYnow_m, lstate_005[-self.rqw:,:])))), YYftr_m))
+    YY_005 = np.vstack((np.vstack((np.hstack((YW, lstate_005[:-(self.rqw),:])), np.hstack((YYnow_005, lstate_005[-self.rqw:,:])))), YYftr_005))
     
     YY_mean_pd = pd.DataFrame(YY_m, columns = self.varlist)
     YY_mean_pd.index = index
