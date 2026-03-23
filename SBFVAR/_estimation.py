@@ -3,7 +3,7 @@ import sys
 import numpy as np
 import math
 from collections import deque
-from scipy.linalg import companion
+from scipy.linalg import companion, solve_discrete_lyapunov
 from scipy.stats import invwishart
 from scipy.linalg import block_diag
 import pandas as pd
@@ -285,14 +285,12 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_e
 
     # Initialize state vector and covariance
     a_t = np.zeros(state_size)
-    P_t = np.zeros((state_size, state_size))
 
-    
-    # Initialize with reasonable values
-    # Iterate to find reasonable starting covariance
-    for kk in range(state_size):
-        P_t = GAMMAs @ P_t @ GAMMAs.T + GAMMAu[:, :Nm] @ sigma_mm @ GAMMAu[:, :Nm].T + GAMMAu[:, Nm:Nm+Nq] @ sigma_qq @ GAMMAu[:, Nm:Nm+Nq].T
-        P_t = 0.5 * (P_t + P_t.T)  # Ensure symmetry
+    # Solve the discrete Lyapunov equation exactly for the steady-state covariance:
+    # P = GAMMAs @ P @ GAMMAs^T + Q
+    Q_init = (GAMMAu[:, :Nm] @ sigma_mm @ GAMMAu[:, :Nm].T
+              + GAMMAu[:, Nm:Nm+Nq] @ sigma_qq @ GAMMAu[:, Nm:Nm+Nq].T)
+    P_t = solve_discrete_lyapunov(GAMMAs, Q_init)
 
     # 5. PREPARE DATA FOR KALMAN FILTER
     # -------------------------------
@@ -695,23 +693,48 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_e
                     # Initialize storage
                     YYactsim_list = np.zeros((math.ceil((self.nsim)/self.thining), rqw+1, Ntotal))
                     XXactsim_list = np.zeros((math.ceil((self.nsim)/self.thining), rqw+1, Ntotal*p+1))
-                
-                # Store the combined data
-                YYactsim_list[j_temp, :, :] = YYact[-(rqw+1):, :]
-                XXactsim_list[j_temp, :, :] = XXact[-(rqw+1):, :]
+
+                # With ragged-edge masking, YYact may be shorter than expected
+                tail_len = min(rqw + 1, YYact.shape[0])
+                YYactsim_list[j_temp, :, :] = np.nan
+                XXactsim_list[j_temp, :, :] = np.nan
+                YYactsim_list[j_temp, -tail_len:, :] = YYact[-tail_len:, :]
+                XXactsim_list[j_temp, -tail_len:, :] = XXact[-tail_len:, :]
 
             # 10. VAR POSTERIOR SAMPLING
             # ----------------------
-            
 
             # Standard VAR posterior calculations
             Tdummy, n = YYdum.shape
             n = int(n)
             Tdummy = int(Tdummy)
             Tobs, n = YYact.shape
+
+            if Tobs == 0:
+                raise ValueError(
+                    "No usable VAR regression rows after masking ragged-edge missing values."
+                )
+
             X = np.vstack((XXact, XXdum))
             Y = np.vstack((YYact, YYdum))
             T = Tobs + Tdummy
+
+            if np.isnan(X).any() or np.isnan(Y).any():
+                raise ValueError(
+                    "Regression matrices contain NaNs after ragged-edge masking."
+                )
+
+            if np.isinf(X).any() or np.isinf(Y).any():
+                raise ValueError("Regression design contains inf values.")
+
+            # Need positive degrees of freedom for inverse-Wishart draw.
+            df_sigma = T - n * p - 1
+            if df_sigma <= 0:
+                raise ValueError(
+                    f"Insufficient effective sample after ragged-edge masking: "
+                    f"T={T}, n={n}, p={p}, df={df_sigma}. Need T > n*p + 1."
+                )
+
             F = np.zeros((int(n*p), int(n*p)))
             I = np.eye(n)
             for i in range(p-1):
