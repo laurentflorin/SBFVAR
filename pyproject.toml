@@ -1,10 +1,13 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools", "pybind11", "numpy"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["SBFVAR*"]
 
 [project]
 name = "SBFVAR"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
 "numpy",
 "scipy",
@@ -23,16 +26,11 @@ dependencies = [
 requires-python = ">= 3.8"
 authors = [
   {name = "Laurent Florin", email = "laurent.florin@efv.admin.ch"}]
-description = "Single base frequency VAR Model"
+description = "Single Base Frequency Bayesian VAR Model"
 readme = "README.md"
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Programming Language :: Python",
 ]
 [project.urls]
-Repository = "https://gitea.efv.admin.ch/efv_fs/MUFBVAR.git"
-
-
-[tool.hatch.envs.default.scripts]
-build-docs = "sphinx-build -b html docs docs/_build/html"
-auto-build-docs = "sphinx-autobuild docs docs/_build/html"
+Repository = "https://github.com/laurentflorin/SBFVAR.git"
