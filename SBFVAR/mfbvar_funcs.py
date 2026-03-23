@@ -222,6 +222,21 @@ def initialize(GAMMAs,GAMMAz,GAMMAc,GAMMAu,
             
             
             
+def _filter_valid_var_rows(YYact, XXact):
+    valid = (~np.isnan(YYact).any(axis=1)) & (~np.isnan(XXact).any(axis=1))
+
+    YYact_f = YYact[valid, :]
+    XXact_f = XXact[valid, :]
+
+    if YYact_f.shape[0] == 0:
+        raise ValueError(
+            "No valid VAR regression rows remain after masking missing observations. "
+            "The sample is too short or too ragged for the requested lag length."
+        )
+
+    return YYact_f, XXact_f, valid
+
+
 def mdd_(hyp, YY, spec):
     """
 
@@ -271,7 +286,10 @@ def mdd_(hyp, YY, spec):
         XXact[:, i*nv:(i+1)*nv] = YY[T0-1-i:T0+nobs-(i+1)]
         
     XXact = np.hstack((XXact, np.ones((nobs, 1))))
-    
+
+    # Filter out ragged-edge rows with missing values
+    YYact, XXact, _ = _filter_valid_var_rows(YYact, XXact)
+
     #dummy: YYdum, XXdum
     #actual: YYact, XXact
     YY = np.transpose(np.hstack((YYdum.T, YYact.T)))
@@ -373,6 +391,9 @@ def calc_yyact(hyp, YY, spec):
 
     # Add constant term
     XXact[:, -nex_:] = 1.0
+
+    # Filter out ragged-edge rows with missing values
+    YYact, XXact, _ = _filter_valid_var_rows(YYact, XXact)
 
     return YYact, YYdum, XXact, XXdum
             
