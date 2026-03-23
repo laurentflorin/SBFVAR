@@ -25,14 +25,14 @@ from sklearn.utils.extmath import randomized_svd
 
 from .cholcov.cholcov_module import cholcovOrEigendecomp
 from .inverse.matrix_inversion import invert_matrix
-from .mfbvar_funcs import calc_yyact, is_explosive
+from .mfbvar_funcs import calc_yyact, is_explosive, mdd_
 
 tqdm = partial(tqdm, position=0, leave=True)
 pio.renderers.default = 'browser'
 
 
 
-def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_explosive = 1000, check_explosive = True):
+def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_explosive = 1000, check_explosive = True, return_mdd=False):
     """
     Fit the mixed-frequency BVAR model using MUFBVAR's approach with
     built-in aggregation relationships in the measurement equation.
@@ -47,9 +47,21 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_e
         Variable of interest for forecasting
     temp_agg : str
         Temporal aggregation method ('mean' or 'sum')
+    max_it_explosive : int
+        Maximum retries when an explosive draw is detected
+    check_explosive : bool
+        Whether to reject explosive VAR draws
+    return_mdd : bool
+        If True, returns the marginal data density (used for hyperparameter optimization)
+
+    Returns
+    -------
+    float or None
+        If return_mdd is True, returns the MDD value. Otherwise None.
     """
     explosive_counter = 0
     valid_draws = []
+    mdd_value = np.nan
     
     self.nex = 1
     self.hyp = hyp
@@ -684,7 +696,10 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_e
             spec = np.hstack((p, T0, self.nex, Ntotal, nobs_))
             
             # Calculate dummy observations for the VAR
-            YYact, YYdum, XXact, XXdum = calc_yyact(self.hyp, YY, spec)
+            if return_mdd:
+                mdd_value, YYact, YYdum, XXact, XXdum = mdd_(self.hyp, YY, spec)
+            else:
+                YYact, YYdum, XXact, XXdum = calc_yyact(self.hyp, YY, spec)
         
             # Store simulation results
             if (j % self.thining == 0):
@@ -973,6 +988,9 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_e
     self.rqw = rqw
     self.rmw = rmw
     
+    if return_mdd:
+        return mdd_value
+
     return None
 
 def forecast(self, H, conditionals = None):

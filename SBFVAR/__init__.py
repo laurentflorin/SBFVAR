@@ -36,6 +36,7 @@ class multifrequency_var:
         
     # Imported methods
     from ._estimation import fit, forecast, aggregate
+    from ._hyp_opt import update_hyperparameters, update_hyperparameters_mango
     from ._save import to_excel, save
 
     
