@@ -23,6 +23,10 @@ from scipy.linalg import eig
 
 from .pseudo_inverse.pseudo_inverse import calculate_pseudo_inverse
 
+# Penalty MDD value returned when no valid VAR regression rows remain (e.g., at early Gibbs
+# sampler iterations with ragged-edge missing data). Signals a poor hyperparameter configuration.
+_PENALTY_MDD = -1e16
+
 
 def varprior(nv, nlags, nex, hyp, premom):
     """
@@ -228,12 +232,6 @@ def _filter_valid_var_rows(YYact, XXact):
     YYact_f = YYact[valid, :]
     XXact_f = XXact[valid, :]
 
-    if YYact_f.shape[0] == 0:
-        raise ValueError(
-            "No valid VAR regression rows remain after masking missing observations. "
-            "The sample is too short or too ragged for the requested lag length."
-        )
-
     return YYact_f, XXact_f, valid
 
 
@@ -253,7 +251,13 @@ def mdd_(hyp, YY, spec):
 
     Returns
     -------
-    None.
+    mdd : float
+        Log marginal data density. Returns ``_PENALTY_MDD`` (a large negative value)
+        when no valid VAR regression rows remain after filtering ragged-edge NaN rows
+        (e.g., at early Gibbs sampler iterations). Callers should treat this as a
+        signal to skip the current hyperparameter configuration.
+    YYact, YYdum, XXact, XXdum : ndarray
+        Actual and dummy observation matrices.
 
     """
     # Data Specification and setting
@@ -290,13 +294,17 @@ def mdd_(hyp, YY, spec):
     # Filter out ragged-edge rows with missing values
     YYact, XXact, _ = _filter_valid_var_rows(YYact, XXact)
 
-    #dummy: YYdum, XXdum
+    if YYact.shape[0] == 0:
+        # No valid rows remain (transient condition at early Gibbs iterations); return penalty MDD
+        return _PENALTY_MDD, YYact, YYdum, XXact, XXdum
+
+    nobs_eff = YYact.shape[0]
     #actual: YYact, XXact
     YY = np.transpose(np.hstack((YYdum.T, YYact.T)))
     XX = np.transpose(np.hstack((XXdum.T, XXact.T)))
     
     n_total = np.shape(YY)[0]
-    n_dummy = n_total - nobs
+    n_dummy = n_total - nobs_eff
     nv = np.shape(YY)[1]
     k = np.shape(XX)[1]
     
@@ -394,6 +402,7 @@ def calc_yyact(hyp, YY, spec):
 
     # Filter out ragged-edge rows with missing values
     YYact, XXact, _ = _filter_valid_var_rows(YYact, XXact)
+    # If no valid rows remain, return empty arrays (caller handles this)
 
     return YYact, YYdum, XXact, XXdum
             
