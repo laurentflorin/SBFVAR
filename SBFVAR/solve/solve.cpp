@@ -9,6 +9,6 @@ Eigen::MatrixXd linalg_solve(Eigen::MatrixXd A, Eigen::MatrixXd B) {
     return X;
 }
 
-PYBIND11_MODULE(linalg_solve, m) {
+PYBIND11_MODULE(solve, m) {
     m.def("linalg_solve", &linalg_solve, "Solve a system of linear equations using Eigen.");
 }

@@ -756,9 +756,9 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_e
                 
                 # Draw VAR coefficients and check stability
             if check_explosive:
+                sigma_chol = cholcovOrEigendecomp(np.kron(sigma, inv_x))
                 attempts = 0
                 while attempts < max_it_explosive:
-                    sigma_chol = cholcovOrEigendecomp(np.kron(sigma, inv_x))
                     phi_new = np.squeeze(Phi_tilde.reshape(n*(n*p+1), 1, order="F")) + sigma_chol @ np.random.standard_normal(sigma_chol.shape[0])
                     Phi = phi_new.reshape(n*p+1, n, order="F")
                     if not is_explosive(Phi, n, p):

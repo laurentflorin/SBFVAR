@@ -1,2 +1,24 @@
+# Python
 *.pyc
 __pycache__/
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Compiled extensions
+*.so
+*.pyd
+*.dll
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# R artifacts
+.RData
+.Rhistory
