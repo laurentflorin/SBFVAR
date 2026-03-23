@@ -713,8 +713,9 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_e
                 tail_len = min(rqw + 1, YYact.shape[0])
                 YYactsim_list[j_temp, :, :] = np.nan
                 XXactsim_list[j_temp, :, :] = np.nan
-                YYactsim_list[j_temp, -tail_len:, :] = YYact[-tail_len:, :]
-                XXactsim_list[j_temp, -tail_len:, :] = XXact[-tail_len:, :]
+                if tail_len > 0:
+                    YYactsim_list[j_temp, -tail_len:, :] = YYact[-tail_len:, :]
+                    XXactsim_list[j_temp, -tail_len:, :] = XXact[-tail_len:, :]
 
             # 10. VAR POSTERIOR SAMPLING
             # ----------------------
