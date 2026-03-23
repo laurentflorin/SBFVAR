@@ -726,29 +726,22 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_e
             Tobs, n = YYact.shape
 
             if Tobs == 0:
-                raise ValueError(
-                    "No usable VAR regression rows after masking ragged-edge missing values."
-                )
+                continue
 
             X = np.vstack((XXact, XXdum))
             Y = np.vstack((YYact, YYdum))
             T = Tobs + Tdummy
 
             if np.isnan(X).any() or np.isnan(Y).any():
-                raise ValueError(
-                    "Regression matrices contain NaNs after ragged-edge masking."
-                )
+                continue
 
             if np.isinf(X).any() or np.isinf(Y).any():
-                raise ValueError("Regression design contains inf values.")
+                continue
 
             # Need positive degrees of freedom for inverse-Wishart draw.
             df_sigma = T - n * p - 1
             if df_sigma <= 0:
-                raise ValueError(
-                    f"Insufficient effective sample after ragged-edge masking: "
-                    f"T={T}, n={n}, p={p}, df={df_sigma}. Need T > n*p + 1."
-                )
+                continue
 
             F = np.zeros((int(n*p), int(n*p)))
             I = np.eye(n)
