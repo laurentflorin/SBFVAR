@@ -94,7 +94,7 @@ def update_hyperparameters_mango(self, mufbvar_data, param_space, init_points, n
     '''
     from mango import scheduler, Tuner
 
-    @scheduler.serial
+    @scheduler.parallel(n_jobs=njobs)
     def calc_mdd_1(lambda1_1, lambda2_1, lambda4_1, lambda5_1):
         hyp_list = [lambda1_1, lambda2_1, 1, lambda4_1, lambda5_1]
         return _estim(self, mufbvar_data, hyp_list, nsim, var_of_interest, temp_agg)
