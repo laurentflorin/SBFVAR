@@ -327,13 +327,19 @@ def mdd_(hyp, YY, spec):
         gam1 = gam1 + loggamma(0.5*(n_total-k+1-(i+1)))
     
     #dummy observation
-    
-    lnpY0 = (-nv * (n_dummy-k) * 0.5 * np.log(math.pi) - (nv/2) * np.log(np.absolute(np.linalg.det(XXdum.T @ XXdum))) -
-            (n_dummy-k)*0.5*np.log(np.absolute(np.linalg.det(S0)))+nv*(nv-1)*0.25*np.log(math.pi)+gam0)
+    # Use slogdet instead of log(|det(...)|) to avoid float64 overflow when
+    # large lambda values inflate the prior matrices (SBFVAR stacks all nv
+    # variables in one system, making determinants scale as lambda^(2*k)).
+    _, logdet_XXdum = np.linalg.slogdet(XXdum.T @ XXdum)
+    _, logdet_S0    = np.linalg.slogdet(S0)
+    lnpY0 = (-nv * (n_dummy-k) * 0.5 * np.log(math.pi) - (nv/2) * logdet_XXdum -
+            (n_dummy-k)*0.5*logdet_S0+nv*(nv-1)*0.25*np.log(math.pi)+gam0)
     
     #dummy and actual observation
-    lnpY1 = (-nv * (n_total-k) * 0.5 * np.log(math.pi) - (nv/2) * np.log(np.absolute(np.linalg.det(XX.T @ XX))) -
-            (n_total-k)*0.5*np.log(np.absolute(np.linalg.det(S1)))+nv*(nv-1)*0.25*np.log(math.pi)+gam1)
+    _, logdet_XX = np.linalg.slogdet(XX.T @ XX)
+    _, logdet_S1 = np.linalg.slogdet(S1)
+    lnpY1 = (-nv * (n_total-k) * 0.5 * np.log(math.pi) - (nv/2) * logdet_XX -
+            (n_total-k)*0.5*logdet_S1+nv*(nv-1)*0.25*np.log(math.pi)+gam1)
     
     lnpYY = lnpY1 - lnpY0
     
