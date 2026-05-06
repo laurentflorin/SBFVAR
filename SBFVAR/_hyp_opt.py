@@ -10,6 +10,11 @@ def _estim(self, mufbvar_data, hyp_list, nsim, var_of_interest, temp_agg):
                        temp_agg=temp_agg, return_mdd=True)
     finally:
         self.nsim = original_nsim
+    # NaN-handling: prevent NaN/inf from propagating to Mango's optimiser.
+    # Mirrors the same guard used in MBFVAR/_hyp_opt.py.
+    if np.isnan(mdd) or np.isinf(mdd):
+        print("MDD is NaN or inf, returning penalty value.")
+        return -1e16
     return mdd
 
 
