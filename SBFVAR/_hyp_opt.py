@@ -5,9 +5,16 @@ def _estim(self, mufbvar_data, hyp_list, nsim, var_of_interest, temp_agg):
     """Call fit() with return_mdd=True, temporarily overriding nsim."""
     original_nsim = self.nsim
     self.nsim = nsim
+    mdd = None
     try:
         mdd = self.fit(mufbvar_data, hyp_list, var_of_interest=var_of_interest,
                        temp_agg=temp_agg, return_mdd=True)
+    except NameError:
+        # fit() raises NameError('No Stable VAR at j=0') after exhausting
+        # 100 full MCMC restarts due to explosive VAR draws.  Return the
+        # penalty value so the optimiser can continue rather than crashing.
+        print("No stable VAR found after maximum restarts, returning penalty value.")
+        return -1e16
     finally:
         self.nsim = original_nsim
     # NaN-handling: prevent NaN/inf from propagating to Mango's optimiser.
