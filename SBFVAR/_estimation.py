@@ -934,6 +934,7 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_e
             LAMBDAc_w = phi_wc
         
         if restart_j0:
+            tries_at_j0 += 1 
             j = -1  # Will be incremented to 0 at the next iteration of the j loop
             should_restart = True
             continue   
