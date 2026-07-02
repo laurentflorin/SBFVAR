@@ -120,7 +120,8 @@ def get_resid_var(tmpY):
         resid = target - Z @ tmpb
         sig2[i] = np.mean(resid ** 2)
     # Guard against degenerate (zero) variances that would break the prior.
-    sig2[sig2 <= 0] = 1e-8
+    _MIN_VAR = 1e-8  # numerical floor to keep the prior precision finite
+    sig2[sig2 <= 0] = _MIN_VAR
     return sig2
 
 

@@ -224,6 +224,8 @@ def fit_cpz(self, mufbvar_data, hyp, var_of_interest=None, temp_agg="mean",
     h = np.zeros(Tnew)
     rho = 0.9
     sigh2 = 0.1
+    # Small random start for the VAR coefficients; scaled down by ``n * 10`` so
+    # the initial companion matrix is comfortably non-explosive.
     beta = np.random.standard_normal((n, n * lag + 1)).T / (n * 10.0)  # (k, n)
     invSig = np.eye(n)
 

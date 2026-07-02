@@ -181,7 +181,6 @@ def _rmse_holdout(self, mufbvar_data_in, hyp_list, H, nsim, var_of_interest,
             cols = [c for c in cols if c in var_of_interest] or cols
 
         fcst_idx = fcst.index.to_timestamp() if hasattr(fcst.index, "to_timestamp") else fcst.index
-        fcst = fcst.copy()
         fcst.index = fcst_idx
 
         errs = []
