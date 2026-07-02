@@ -32,7 +32,43 @@ pio.renderers.default = 'browser'
 
 
 
-def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_explosive = 1000, check_explosive = True, return_mdd=False):
+def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_explosive=1000,
+        check_explosive=True, return_mdd=False, method='schorfheide_song'):
+    """
+    Dispatch to the requested mixed-frequency estimator.
+
+    Parameters
+    ----------
+    method : str
+        ``'schorfheide_song'`` (default) uses the original Schorfheide-Song
+        (2015) estimator with byte-for-byte identical behaviour.
+        ``'chan_poon_zhu'`` uses the Chan, Poon & Zhu (2024) stacked
+        conditionally-Gaussian estimator with common stochastic volatility
+        (see :mod:`SBFVAR._estimation_cpz`).
+
+    All other parameters are forwarded to the selected estimator; see
+    :func:`_fit_ss` for their meaning.
+    """
+    valid_methods = ("schorfheide_song", "chan_poon_zhu")
+    if method not in valid_methods:
+        raise ValueError(
+            f"Unknown method '{method}'. Choose one of {valid_methods}."
+        )
+    self.method = method
+    if method == "chan_poon_zhu":
+        return self.fit_cpz(
+            mufbvar_data, hyp, var_of_interest=var_of_interest,
+            temp_agg=temp_agg, check_explosive=check_explosive,
+            return_mdd=return_mdd, max_it_explosive=max_it_explosive,
+        )
+    return self._fit_ss(
+        mufbvar_data, hyp, var_of_interest=var_of_interest, temp_agg=temp_agg,
+        max_it_explosive=max_it_explosive, check_explosive=check_explosive,
+        return_mdd=return_mdd,
+    )
+
+
+def _fit_ss(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_explosive = 1000, check_explosive = True, return_mdd=False):
     """
     Fit the mixed-frequency BVAR model using MUFBVAR's approach with
     built-in aggregation relationships in the measurement equation.
@@ -988,7 +1024,29 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_e
 
     return None
 
-def forecast(self, H, conditionals = None):
+def forecast(self, H, conditionals=None, method=None):
+
+    '''
+    Dispatch to the requested forecaster.
+
+    Parameters
+    ----------
+    H : int
+        Forecast horizon in highest frequency.
+    conditionals : pandas DataFrame or None
+        Conditional forecasts (see :func:`_forecast_ss`).
+    method : str or None
+        Estimation method to forecast with; defaults to the method recorded on
+        the model during :func:`fit`.  ``'chan_poon_zhu'`` routes to
+        :func:`SBFVAR._estimation_cpz.forecast_cpz`.
+    '''
+    m = method or getattr(self, "method", "schorfheide_song")
+    if m == "chan_poon_zhu":
+        return self.forecast_cpz(H, conditionals)
+    return self._forecast_ss(H, conditionals)
+
+
+def _forecast_ss(self, H, conditionals = None):
     
     '''
     Method to generate the forecasts in the highest frequency.\n

@@ -35,8 +35,10 @@ class multifrequency_var:
         self.thining = thining
         
     # Imported methods
-    from ._estimation import fit, forecast, aggregate
-    from ._hyp_opt import update_hyperparameters, update_hyperparameters_mango
+    from ._estimation import fit, forecast, aggregate, _fit_ss, _forecast_ss
+    from ._estimation_cpz import fit_cpz, forecast_cpz
+    from ._hyp_opt import (update_hyperparameters, update_hyperparameters_mango,
+                           update_hyperparameters_mango_rmse)
     from ._save import to_excel, save
 
     
