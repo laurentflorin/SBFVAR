@@ -127,9 +127,11 @@ def fit_cpz(self, mufbvar_data, hyp, var_of_interest=None, temp_agg="mean",
     mufbvar_data : sbfvar_data
         Prepared data object.
     hyp : ndarray
-        Hyperparameter vector ``[lambda1, ..., lambda5]``.  The Minnesota prior
-        maps these to ``theta = [lambda1, lambda2, lambda4, lambda3]`` =
+        Hyperparameter vector ``[lambda1, ..., lambda5]``.  The CPZ Minnesota
+        prior currently uses the first four entries and maps them to
+        ``theta = [lambda1, lambda2, lambda4, lambda3]`` =
         ``[overall_tightness, cross_shrinkage, const_scale, lag_decay]``.
+        ``lambda5`` is retained for public-API compatibility.
     var_of_interest, temp_agg, check_explosive, max_it_explosive
         Kept for signature compatibility with the SS ``fit``.
     return_mdd : bool
@@ -144,9 +146,13 @@ def fit_cpz(self, mufbvar_data, hyp, var_of_interest=None, temp_agg="mean",
     self.temp_agg = temp_agg
     self.var_of_interest = var_of_interest
     self.method = "chan_poon_zhu"
-    assert temp_agg in ("mean", "sum"), (
-        f"Invalid temp_agg: {temp_agg}. Choose 'mean' or 'sum'."
-    )
+    if temp_agg == "sum":
+        raise ValueError(
+            "method='chan_poon_zhu' currently supports temp_agg='mean' only; "
+            "sum aggregation constraints are not implemented in the CPZ path."
+        )
+    if temp_agg != "mean":
+        raise ValueError(f"Invalid temp_agg: {temp_agg}. Choose 'mean'.")
 
     frequencies = list(mufbvar_data.frequencies)
     self.frequencies = frequencies
@@ -193,7 +199,7 @@ def fit_cpz(self, mufbvar_data, hyp, var_of_interest=None, temp_agg="mean",
     M_a = sel["M_a"]
     Y_con = sel["Y_con"]
     vecY = sel["vecY"]
-    ridge_dim = min(M_u.shape[1], n_low * lag)
+    ridge_dim = sel["ridge_dim"]
 
     # ---- Minnesota prior -----------------------------------------------
     # AR(4) residual variances in the stacked (high -> low) variable order.
@@ -201,6 +207,8 @@ def fit_cpz(self, mufbvar_data, hyp, var_of_interest=None, temp_agg="mean",
     for blk in block_info:
         sig2_parts.append(get_resid_var(datasets[blk["level"]]))
     sig2 = np.concatenate(sig2_parts)
+    # CPZ's MATLAB-style Minnesota prior uses four hyperparameters here.  The
+    # package-level fifth hyperparameter is kept for API compatibility.
     theta = [float(self.hyp[0]), float(self.hyp[1]),
              float(self.hyp[3]), float(self.hyp[2])]
     invVbeta = construct_minnesota(sig2, n, lag, theta).tocsc()

@@ -243,6 +243,10 @@ The `hyp` vector passed to `fit()` contains five Minnesota-prior hyperparameters
 | λ4 | `hyp[3]` | Exogenous/constant tightness. |
 | λ5 | `hyp[4]` | Covariance prior scaling. |
 
+For `method="chan_poon_zhu"`, the current CPZ port uses `hyp[0]` through
+`hyp[3]` for the MATLAB-style Minnesota prior and keeps `hyp[4]` only for
+compatibility with the package-level five-hyperparameter API.
+
 ---
 
 ## Data Transformations
