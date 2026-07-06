@@ -315,9 +315,12 @@ def to_excel(self, filename, agg=False, include_metadata=True):
             # Use non-aggregated forecasts
             print(f"Exporting regular forecasts to {filename}...")
             
-            # Check for all required forecast attributes
-            all_attrs = ['YY_mean_pd', 'YY_med_pd', 'YY_095_pd', 'YY_005_pd', 'YY_084_pd', 'YY_016_pd']
+            # Check for all required forecast attributes.
+            # Keep backward compatibility with older serialized models that used YY_med_pd.
+            all_attrs = ['YY_mean_pd', 'YY_median_pd', 'YY_095_pd', 'YY_005_pd', 'YY_084_pd', 'YY_016_pd']
             present_attrs = [attr for attr in all_attrs if hasattr(self, attr) and getattr(self, attr) is not None]
+            if not present_attrs and hasattr(self, 'YY_med_pd') and getattr(self, 'YY_med_pd') is not None:
+                present_attrs = ['YY_med_pd']
             
             if not present_attrs:
                 print("No forecast data found. Please run model.forecast() first.")
@@ -328,6 +331,7 @@ def to_excel(self, filename, agg=False, include_metadata=True):
                 # Map of attribute names to sheet names
                 attr_to_sheet = {
                     'YY_mean_pd': 'mean',
+                    'YY_median_pd': 'median',
                     'YY_med_pd': 'median',
                     'YY_095_pd': '95_quantile',
                     'YY_005_pd': '5_quantile',
