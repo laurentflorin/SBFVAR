@@ -105,23 +105,42 @@ def get_resid_var(tmpY):
     tmpY = np.asarray(tmpY, dtype=float)
     T, n = tmpY.shape
     sig2 = np.zeros(n)
+    _MIN_VAR = 1e-8  # numerical floor to keep the prior precision finite
+
+    def _fallback_var(y):
+        y_finite = y[np.isfinite(y)]
+        if y_finite.size >= 2:
+            out = np.var(y_finite)
+        else:
+            out = 1.0
+        if not np.isfinite(out) or out <= 0:
+            out = _MIN_VAR
+        return out
+
     for i in range(n):
         y = tmpY[:, i]
         if T <= 5:
             # Not enough observations for AR(4); fall back to the sample var.
-            sig2[i] = np.var(y) if y.size else 1.0
+            sig2[i] = _fallback_var(y)
             continue
         Z = np.column_stack([
             np.ones(T - 4),
             y[3:-1], y[2:-2], y[1:-3], y[0:-4],
         ])
         target = y[4:]
-        tmpb, *_ = np.linalg.lstsq(Z, target, rcond=None)
-        resid = target - Z @ tmpb
-        sig2[i] = np.mean(resid ** 2)
+        valid = np.isfinite(target) & np.isfinite(Z).all(axis=1)
+        if np.count_nonzero(valid) < Z.shape[1]:
+            sig2[i] = _fallback_var(y)
+            continue
+        try:
+            tmpb, *_ = np.linalg.lstsq(Z[valid, :], target[valid], rcond=None)
+        except np.linalg.LinAlgError:
+            sig2[i] = _fallback_var(y)
+            continue
+        resid = target[valid] - Z[valid, :] @ tmpb
+        sig2[i] = np.mean(resid ** 2) if resid.size else _fallback_var(y)
     # Guard against degenerate (zero) variances that would break the prior.
-    _MIN_VAR = 1e-8  # numerical floor to keep the prior precision finite
-    sig2[sig2 <= 0] = _MIN_VAR
+    sig2[(~np.isfinite(sig2)) | (sig2 <= 0)] = _MIN_VAR
     return sig2
 
 
@@ -333,11 +352,12 @@ def build_selection_matrices(Yraw, block_info, datasets, lag):
     """Build ``vecY``, ``M_o``, ``M_u``, ``M_a`` and ``Y_con``.
 
     Faithful, N-frequency generalisation of the selection-matrix construction
-    in ``MFVAR.m``.  All lower-frequency variables are treated as
-    intertemporal-aggregation ("flow") constraints handled through ``M_a`` (the
-    Mariano-Murasawa tent weights ``[1:m, m-1:-1:1]/m``), matching the
-    ``temp_agg`` convention of the package; the highest-frequency block is fully
-    observed.
+    in ``MFVAR.m``.  All lower-frequency variables are treated as latent
+    high-frequency states with intertemporal-aggregation ("flow") constraints
+    handled through ``M_a`` (the Mariano-Murasawa tent weights
+    ``[1:m, m-1:-1:1]/m``).  Highest-frequency entries are observed only when
+    finite; missing/ragged highest-frequency entries are sampled as latent
+    states in the same unified system.
 
     Parameters
     ----------
@@ -365,17 +385,25 @@ def build_selection_matrices(Yraw, block_info, datasets, lag):
 
     # --- observed / missing selection (M_o, M_u) -------------------------
     # vec ordering is time-major: for each t the n variables in high-to-low
-    # order.  The first n_high entries per time are observed, the remaining
-    # n_low are latent (missing).
+    # order.  Finite highest-frequency entries are directly observed.  Missing
+    # highest-frequency entries and all lower-frequency entries are latent.
     nT = n * T
-    N_m = n_low * T
 
-    obs_rows = np.concatenate([
-        np.arange(t * n, t * n + n_high) for t in range(T)
-    ]) if n_high > 0 else np.array([], dtype=int)
-    mis_rows = np.concatenate([
-        np.arange(t * n + n_high, (t + 1) * n) for t in range(T)
-    ]) if n_low > 0 else np.array([], dtype=int)
+    obs_mask = np.zeros((T, n), dtype=bool)
+    if n_high > 0:
+        obs_mask[:, :n_high] = np.isfinite(Yraw[:, :n_high])
+
+    latent_mask = np.zeros((T, n), dtype=bool)
+    if n_high > 0:
+        latent_mask[:, :n_high] = ~np.isfinite(Yraw[:, :n_high])
+    if n_low > 0:
+        latent_mask[:, n_high:] = True
+
+    obs_rows = np.flatnonzero(obs_mask.reshape((nT,), order="C"))
+    mis_rows = np.flatnonzero(latent_mask.reshape((nT,), order="C"))
+    N_m = mis_rows.shape[0]
+    row_to_mis_col = np.full(nT, -1, dtype=int)
+    row_to_mis_col[mis_rows] = np.arange(N_m)
 
     n_obs = obs_rows.shape[0]
     M_o = sp.csc_matrix(
@@ -387,7 +415,9 @@ def build_selection_matrices(Yraw, block_info, datasets, lag):
 
     # vecY = observed high-frequency values, stacked time-major.
     Yfull_vec = Yraw.reshape((nT,), order="C")  # row t block of n vars
-    vecY = np.asarray(M_o.T @ np.nan_to_num(Yfull_vec)).ravel()
+    vecY = np.asarray(M_o.T @ Yfull_vec).ravel()
+    if not np.isfinite(vecY).all():
+        raise ValueError("Observed CPZ data vector contains non-finite values.")
 
     # --- intertemporal-aggregation constraints (M_a, Y_con) --------------
     # Low-frequency blocks are ordered high-to-low starting after the highest
@@ -412,22 +442,30 @@ def build_selection_matrices(Yraw, block_info, datasets, lag):
             # 0-indexed high-frequency start of the tent for observation i
             start = (i - 1) * m + 1
             for a in range(nk):
+                if not np.isfinite(d[i, a]):
+                    continue
                 for wi, wv in enumerate(w):
                     t = start + wi
                     if t < 0 or t >= T:
                         continue
                     # latent-vector row for variable (off+a) at time t
-                    rows_ma.append(t * n_low + off + a)
-                    cols_ma.append(con_col + a)
+                    full_row = t * n + n_high + off + a
+                    latent_col = row_to_mis_col[full_row]
+                    if latent_col < 0:
+                        raise RuntimeError(
+                            "Aggregation constraint references a non-latent row."
+                        )
+                    rows_ma.append(latent_col)
+                    cols_ma.append(con_col)
                     vals_ma.append(wv)
-            y_con_parts.append(d[i, :])
-            con_col += nk
+                y_con_parts.append(d[i, a])
+                con_col += 1
 
     if con_col > 0:
         M_a = sp.csc_matrix(
             (vals_ma, (rows_ma, cols_ma)), shape=(N_m, con_col)
         )
-        Y_con = np.concatenate(y_con_parts)
+        Y_con = np.asarray(y_con_parts, dtype=float)
     else:
         M_a = sp.csc_matrix((N_m, 0))
         Y_con = np.zeros(0)
@@ -446,6 +484,9 @@ def build_selection_matrices(Yraw, block_info, datasets, lag):
         "M_u": M_u,
         "M_a": M_a,
         "Y_con": Y_con,
+        "mis_rows": mis_rows,
+        "row_to_mis_col": row_to_mis_col,
+        "ridge_dim": int(np.count_nonzero((mis_rows // n) < lag)),
         "n": n,
         "T": T,
         "n_high": n_high,
