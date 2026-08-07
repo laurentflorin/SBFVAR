@@ -1,14 +1,16 @@
 import numpy as np
 
 
-def _estim(self, mufbvar_data, hyp_list, nsim, var_of_interest, temp_agg):
+def _estim(self, mufbvar_data, hyp_list, nsim, var_of_interest, temp_agg,
+           method='schorfheide_song', max_it_explosive=1000):
     """Call fit() with return_mdd=True, temporarily overriding nsim."""
     original_nsim = self.nsim
     self.nsim = nsim
     mdd = None
     try:
         mdd = self.fit(mufbvar_data, hyp_list, var_of_interest=var_of_interest,
-                       temp_agg=temp_agg, return_mdd=True)
+                       temp_agg=temp_agg, return_mdd=True,
+                       method=method, max_it_explosive=max_it_explosive)
     except NameError:
         # fit() raises NameError('No Stable VAR at j=0') after exhausting
         # 100 full MCMC restarts due to explosive VAR draws.  Return the
@@ -80,7 +82,8 @@ def update_hyperparameters(self, mufbvar_data, pbounds, init_points, n_iter, nsi
 
 def update_hyperparameters_mango(self, mufbvar_data, param_space, init_points, n_iter,
                                   nsim, njobs, var_of_interest=None, temp_agg='mean',
-                                  save=False, name="hyp.txt"):
+                                  save=False, name="hyp.txt",
+                                  method='schorfheide_song', max_it_explosive=1000):
     '''
     Uses Mango Bayesian optimization to find hyperparameters with the highest MDD.
 
@@ -99,6 +102,12 @@ def update_hyperparameters_mango(self, mufbvar_data, param_space, init_points, n
     temp_agg : str
     save : bool
     name : str
+    method : str
+        Estimation approach forwarded to :func:`fit`, either
+        ``'schorfheide_song'`` (default) or ``'chan_poon_zhu'``.
+    max_it_explosive : int
+        Maximum number of attempts to draw non-explosive VAR coefficients,
+        forwarded to :func:`fit`.
 
     Returns
     -------
@@ -109,7 +118,8 @@ def update_hyperparameters_mango(self, mufbvar_data, param_space, init_points, n
     @scheduler.parallel(n_jobs=njobs)
     def calc_mdd_1(lambda1_1, lambda2_1, lambda4_1, lambda5_1):
         hyp_list = [lambda1_1, lambda2_1, 1, lambda4_1, lambda5_1]
-        return _estim(self, mufbvar_data, hyp_list, nsim, var_of_interest, temp_agg)
+        return _estim(self, mufbvar_data, hyp_list, nsim, var_of_interest, temp_agg,
+                      method=method, max_it_explosive=max_it_explosive)
 
     conf_dict = dict(
         num_iteration=n_iter,
