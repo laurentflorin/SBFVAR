@@ -83,7 +83,7 @@ def update_hyperparameters(self, mufbvar_data, pbounds, init_points, n_iter, nsi
 def update_hyperparameters_mango(self, mufbvar_data, param_space, init_points, n_iter,
                                   nsim, njobs, var_of_interest=None, temp_agg='mean',
                                   save=False, name="hyp.txt",
-                                  method='schorfheide_song', max_it_explosive=1000):
+                                  method='schorfheide_song', max_it_explosive=1000, seed=0):
     '''
     Uses Mango Bayesian optimization to find hyperparameters with the highest MDD.
 
@@ -114,6 +114,12 @@ def update_hyperparameters_mango(self, mufbvar_data, param_space, init_points, n
     hyp : list
     '''
     from mango import scheduler, Tuner
+
+    # Seeds mango's own candidate-point sampling (global numpy/scipy random
+    # state); self.seed is fixed here so every fit() call below is
+    # reproducible too.
+    np.random.seed(seed)
+    self.seed = seed
 
     @scheduler.parallel(n_jobs=njobs)
     def calc_mdd_1(lambda1_1, lambda2_1, lambda4_1, lambda5_1):
@@ -214,7 +220,7 @@ def update_hyperparameters_mango_rmse(self, mufbvar_data_in, param_space, H,
                                       init_points, n_iter, nsim, njobs,
                                       var_of_interest=None, temp_agg='mean',
                                       method='chan_poon_zhu', h_eval=None,
-                                      n_eval=1, save=False, name="hyp.txt"):
+                                      n_eval=1, save=False, name="hyp.txt", seed=0):
     '''
     Mango RMSE-based hyperparameter tuner (used for the Chan, Poon & Zhu path).
 
@@ -260,6 +266,9 @@ def update_hyperparameters_mango_rmse(self, mufbvar_data_in, param_space, H,
     '''
     from mango import scheduler, Tuner
     from ._cpz_funcs import build_frequency_ratios
+
+    np.random.seed(seed)
+    self.seed = seed
 
     # Highest-frequency periods per one lowest-frequency period.
     _, ratios_to_highest = build_frequency_ratios(list(mufbvar_data_in.frequencies))

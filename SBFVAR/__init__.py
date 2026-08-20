@@ -27,12 +27,13 @@ class multifrequency_var:
 
     '''
     
-    def __init__(self, nsim, nburn_perc, nlags, thining):
-        
+    def __init__(self, nsim, nburn_perc, nlags, thining, seed=0):
+
         self.nsim = nsim
         self.nburn_perc = nburn_perc
         self.nlags = nlags
         self.thining = thining
+        self.seed = seed
         
     # Imported methods
     from ._estimation import fit, forecast, aggregate, _fit_ss, _forecast_ss

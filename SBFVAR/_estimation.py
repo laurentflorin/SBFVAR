@@ -33,7 +33,7 @@ pio.renderers.default = 'browser'
 
 
 def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_explosive=1000,
-        check_explosive=True, return_mdd=False, method='schorfheide_song'):
+        check_explosive=True, return_mdd=False, method='schorfheide_song', seed=None):
     """
     Dispatch to the requested mixed-frequency estimator.
 
@@ -55,6 +55,10 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_e
             f"Unknown method '{method}'. Choose one of {valid_methods}."
         )
     self.method = method
+    if seed is None:
+        seed = getattr(self, 'seed', 0)
+    self.seed = seed
+    np.random.seed(seed)
     if method == "chan_poon_zhu":
         return self.fit_cpz(
             mufbvar_data, hyp, var_of_interest=var_of_interest,
@@ -1024,7 +1028,7 @@ def _fit_ss(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_
 
     return None
 
-def forecast(self, H, conditionals=None, method=None):
+def forecast(self, H, conditionals=None, method=None, seed=None):
 
     '''
     Dispatch to the requested forecaster.
@@ -1040,6 +1044,9 @@ def forecast(self, H, conditionals=None, method=None):
         the model during :func:`fit`.  ``'chan_poon_zhu'`` routes to
         :func:`SBFVAR._estimation_cpz.forecast_cpz`.
     '''
+    if seed is None:
+        seed = getattr(self, 'seed', 0)
+    np.random.seed(seed)
     m = method or getattr(self, "method", "schorfheide_song")
     if m == "chan_poon_zhu":
         return self.forecast_cpz(H, conditionals)
@@ -1179,9 +1186,9 @@ def _forecast_ss(self, H, conditionals = None):
         
         for h in range(H_+1):
             if post_sig.size > 1:
-                error_pred[h,:] = np.random.default_rng().multivariate_normal(mean = np.zeros(Ntotal), cov = post_sig, method = "cholesky")
+                error_pred[h,:] = np.linalg.cholesky(post_sig) @ np.random.standard_normal(Ntotal)
             else:
-                error_pred[h,:] = np.random.default_rng().normal(loc = 0, scale = post_sig)
+                error_pred[h,:] = np.random.normal(loc = 0, scale = post_sig)
         # given posterior draw, iterate forward to construct forecasts
         
         for h in range(1,H_+1):
