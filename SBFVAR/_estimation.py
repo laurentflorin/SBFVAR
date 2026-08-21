@@ -215,7 +215,11 @@ def _fit_ss(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_
     a_filtered = np.zeros((nobs, state_size))
     P_filtered = np.zeros((nobs, state_size, state_size))
     P_filtered2 = np.zeros((nobs, 1, (Nstate*(p+1))**2))
-    a_draws = np.zeros((self.nsim, nobs, state_size))
+    # NOTE: a former (nsim, nobs, state_size) "a_draws" allocation lived here.
+    # It was never written or read anywhere (the smoothed states are stored in
+    # lstate_list instead), yet requested nsim*nobs*state_size*8 bytes -
+    # ~25 GB at nsim=15000 on the paper's data - and crashed on machines
+    # whose kernel refuses the overcommit. Removed; results are unchanged.
     
     # 1. STATE TRANSITION DEFINITION (GAMMA MATRICES)
     # ----------------------------------------------
@@ -998,7 +1002,6 @@ def _fit_ss(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_
     self.valid_draws = [draw for draw in valid_draws if draw >= self.nburn/self.thining]
     self.lstate_list = lstate_list
     # Store state-space model matrices
-    self.a_draws = a_draws
     self.GAMMAs = GAMMAs
     self.GAMMAc = GAMMAc
     self.GAMMAu = GAMMAu
