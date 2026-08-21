@@ -100,6 +100,10 @@ def _fit_ss(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_
         If return_mdd is True, returns the MDD value. Otherwise None.
     """
     explosive_counter = 0
+    # Stability-truncation accounting: total Phi proposals drawn and how many
+    # of them the is_explosive() check rejected (across restarts).
+    stability_proposals = 0
+    stability_rejected = 0
     valid_draws = []
     mdd_value = np.nan
     
@@ -817,6 +821,8 @@ def _fit_ss(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_
                     if not is_explosive(Phi, n, p):
                         break
                     attempts += 1
+                stability_rejected += attempts
+                stability_proposals += attempts + (1 if attempts < max_it_explosive else 0)
                 if attempts == max_it_explosive:
                     explosive_counter += 1
                     print(f"Explosive VAR detected {explosive_counter} times.")
@@ -824,7 +830,7 @@ def _fit_ss(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_
                         restart_j0 = True
                         break
                     else:
-                        continue   
+                        continue
             else:
                 sigma_chol = cholcovOrEigendecomp(np.kron(sigma, inv_x))
                 phi_new = np.squeeze(Phi_tilde.reshape(n*(n*p+1), 1, order="F")) + sigma_chol @ np.random.standard_normal(sigma_chol.shape[0])
@@ -999,6 +1005,14 @@ def _fit_ss(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_
     self.YYactsim_list = YYactsim_list
     self.XXactsim_list = XXactsim_list
     self.explosive_counter = explosive_counter
+    # Share of Phi proposals rejected by the stability truncation; NaN when
+    # check_explosive was off (no proposals were screened).
+    self.stability_proposals = stability_proposals
+    self.stability_rejected = stability_rejected
+    self.stability_rejection_share = (
+        stability_rejected / stability_proposals if stability_proposals > 0
+        else float("nan")
+    )
     self.valid_draws = [draw for draw in valid_draws if draw >= self.nburn/self.thining]
     self.lstate_list = lstate_list
     # Store state-space model matrices

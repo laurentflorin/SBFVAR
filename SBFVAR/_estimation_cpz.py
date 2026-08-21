@@ -127,16 +127,50 @@ def fit_cpz(self, mufbvar_data, hyp, var_of_interest=None, temp_agg="mean",
     mufbvar_data : sbfvar_data
         Prepared data object.
     hyp : ndarray
-        Hyperparameter vector ``[lambda1, ..., lambda5]``.  The CPZ Minnesota
-        prior currently uses the first four entries and maps them to
-        ``theta = [lambda1, lambda2, lambda4, lambda3]`` =
-        ``[overall_tightness, cross_shrinkage, const_scale, lag_decay]``.
-        ``lambda5`` is retained for public-API compatibility.
+        Hyperparameter vector in the Chan-Poon-Zhu reference order
+        ``[kappa1, kappa2, kappa3, kappa4]`` =
+        ``[own-lag tightness, cross shrinkage, constant scale, lag-decay
+        exponent]``, e.g. the reference values ``[0.2**2, 0.5**2, 100, 2]``.
+        A fifth entry, if present, is ignored (public-API compatibility).
+        A SIX-entry vector ``[k1, k2, k3, k4, mu_soc, mu_dio]`` additionally
+        activates sum-of-coefficients dummies (tightness ``mu_soc``, one row
+        per variable, built from each variable's own-frequency pre-sample
+        mean) and a dummy-initial-observation row (tightness ``mu_dio``);
+        zero disables either block, and the dummies inform the coefficient
+        draw only (not the Wishart update of ``invSig`` nor the volatility
+        step).
+
+        .. warning:: Versions <= 0.1.3 transposed the last two entries
+           internally (``theta = [hyp[0], hyp[1], hyp[3], hyp[2]]``), so the
+           reference vector above was executed as constant scale 2 and
+           lag-decay exponent 100 -- the latter pins every lag beyond the
+           first to zero (prior variance ``kappa1 / l**100``).  Runs made
+           with those versions are therefore effectively VAR(1) fits
+           regardless of the nominal lag order.  The executed ``theta`` is
+           now printed at fit time and stored as ``self.cpz_theta``.
     var_of_interest, temp_agg, check_explosive, max_it_explosive
         Kept for signature compatibility with the SS ``fit``.
     return_mdd : bool
-        The CPZ path is tuned via RMSE (not MDD); when ``True`` this returns
-        ``np.nan`` so MDD-based callers degrade gracefully.
+        When ``True``, return the **conditional marginal data density** of the
+        stacked CPZ system: at every retained draw the closed-form Gaussian
+        marginal likelihood ``ln p(Y_completed | invSig, h)`` is evaluated
+        with the VAR coefficients ``beta`` integrated out analytically under
+        the Minnesota prior ``N(0, Vbeta)``,
+
+        ``ln p = -nT'/2 ln(2pi) + T'/2 ln|invSig| - n/2 sum_t h_t
+        + 1/2 ln|invVbeta| - 1/2 ln|Kbeta| - 1/2 (S - b' Kbeta^{-1} b)``,
+
+        where ``Kbeta = kron(invSig, X'DX) + invVbeta`` is the posterior
+        precision of ``vec(beta)``, ``b`` its linear term, and
+        ``S = sum_t e^{-h_t} y_t' invSig y_t``.  The returned scalar is the
+        MEAN of this quantity over the retained draws; the per-draw values are
+        stored in ``self.cpz_mdd_draws``.  Like the Schorfheide-Song path's
+        ``mdd_`` objective, this conditions on the drawn latent states (it is
+        a plug-in conditional marginal likelihood, not the observed-data MDD),
+        but unlike the SS objective it averages over retained draws instead of
+        using the final draw only.  Its Occam term
+        ``1/2 ln|invVbeta| - 1/2 ln|Kbeta|`` penalises the VAR dimension, so
+        it is usable for lag-order selection at fixed hyperparameters.
 
     Returns
     -------
@@ -207,12 +241,66 @@ def fit_cpz(self, mufbvar_data, hyp, var_of_interest=None, temp_agg="mean",
     for blk in block_info:
         sig2_parts.append(get_resid_var(datasets[blk["level"]]))
     sig2 = np.concatenate(sig2_parts)
-    # CPZ's MATLAB-style Minnesota prior uses four hyperparameters here.  The
-    # package-level fifth hyperparameter is kept for API compatibility.
+    # CPZ's MATLAB-style Minnesota prior in the reference order
+    # [own tightness, cross shrinkage, constant scale, lag-decay exponent].
+    # (Versions <= 0.1.3 transposed the last two entries; see the docstring.)
     theta = [float(self.hyp[0]), float(self.hyp[1]),
-             float(self.hyp[3]), float(self.hyp[2])]
+             float(self.hyp[2]), float(self.hyp[3])]
+    self.cpz_theta = list(theta)
+    print(f"Minnesota theta [own, cross, const, lag-decay]: {theta}",
+          end="\n")
     invVbeta = construct_minnesota(sig2, n, lag, theta).tocsc()
     dim = n * (n * lag + 1)
+    # Prior log-determinant for the conditional-MDD evaluation (diagonal).
+    logdet_invVbeta = float(np.sum(np.log(invVbeta.diagonal())))
+    cpz_mdd_draws = []
+
+    # ---- optional sum-of-coefficients / dummy-initial-observation priors
+    # Activated by a 6-entry hyp vector [k1, k2, k3, k4, mu_soc, mu_dio];
+    # zero tightness disables the corresponding block. The dummies enter the
+    # beta step as extra observation rows with unit volatility weight (they
+    # do not enter the Wishart update of invSig or the SV step), i.e. as a
+    # Gaussian prior-mean/precision augmentation conditional on invSig.
+    hyp_arr = np.asarray(self.hyp, dtype=float).ravel()
+    mu_soc = float(hyp_arr[4]) if hyp_arr.size >= 6 else 0.0
+    mu_dio = float(hyp_arr[5]) if hyp_arr.size >= 6 else 0.0
+    if mu_soc < 0 or mu_dio < 0:
+        raise ValueError("mu_soc and mu_dio must be non-negative.")
+    self.cpz_mu_soc, self.cpz_mu_dio = mu_soc, mu_dio
+    k_reg = n * lag + 1
+    dummy_y, dummy_x = [], []
+    if mu_soc > 0 or mu_dio > 0:
+        # Pre-sample means per variable, taken from each variable's OWN
+        # frequency data (fixed across iterations), stacked in block order.
+        ybar = np.concatenate([
+            np.nanmean(np.asarray(datasets[blk["level"]], dtype=float), axis=0)
+            for blk in block_info])
+        if mu_soc > 0:
+            for i in range(n):
+                y_row = np.zeros(n)
+                y_row[i] = mu_soc * ybar[i]
+                x_row = np.zeros(k_reg)
+                for l in range(lag):
+                    x_row[1 + l * n + i] = mu_soc * ybar[i]
+                dummy_y.append(y_row)
+                dummy_x.append(x_row)
+        if mu_dio > 0:
+            y_row = mu_dio * ybar
+            x_row = np.zeros(k_reg)
+            x_row[0] = mu_dio
+            for l in range(lag):
+                x_row[1 + l * n: 1 + (l + 1) * n] = mu_dio * ybar
+            dummy_y.append(y_row)
+            dummy_x.append(x_row)
+    if dummy_y:
+        Xd = np.vstack(dummy_x)
+        Yd = np.vstack(dummy_y)
+        XdtXd = Xd.T @ Xd
+        XdtYd = Xd.T @ Yd
+        print(f"CPZ dummy priors active: mu_soc={mu_soc}, mu_dio={mu_dio} "
+              f"({Yd.shape[0]} dummy rows)", end="\n")
+    else:
+        XdtXd = XdtYd = None
 
     # ---- MCMC bookkeeping ----------------------------------------------
     total = int(self.nsim)
@@ -265,13 +353,53 @@ def fit_cpz(self, mufbvar_data, hyp, var_of_interest=None, temp_agg="mean",
         Dexp = np.exp(-h)
         XtD = X.T * Dexp                    # (k, Tnew)
         XtDX = XtD @ X                       # (k, k)
+        if XdtXd is not None:
+            XtDX = XtDX + XdtXd
         Kbeta = np.kron(invSig, XtDX) + invVbeta.toarray()
         Kbeta = 0.5 * (Kbeta + Kbeta.T)
         rhs = (X.T * Dexp) @ Y_new @ invSig  # (k, n)
-        mu = np.linalg.solve(Kbeta, rhs.reshape((dim,), order="F"))
+        if XdtYd is not None:
+            rhs = rhs + XdtYd @ invSig
+        b_vec = rhs.reshape((dim,), order="F")
+        mu = np.linalg.solve(Kbeta, b_vec)
         U = np.linalg.cholesky(Kbeta).T      # upper
         beta_vec = mu + np.linalg.solve(U, np.random.standard_normal(dim))
         beta = beta_vec.reshape((n * lag + 1, n), order="F")
+
+        # Conditional MDD ln p(Y_new | invSig, h) with beta integrated out
+        # (see the fit_cpz docstring); evaluated at the same (invSig, h) the
+        # beta step conditioned on, for retained draws only.
+        if return_mdd and it >= Burn and ((it - Burn) % thin == 0):
+            sign_isig, logdet_invSig = np.linalg.slogdet(invSig)
+            if sign_isig <= 0:
+                raise np.linalg.LinAlgError(
+                    "invSig draw is not positive definite in the conditional-"
+                    "MDD evaluation."
+                )
+            S_quad = float(np.sum((Y_new @ invSig) * Y_new * Dexp[:, None]))
+            logdet_Kbeta = 2.0 * float(np.sum(np.log(np.diag(U))))
+            if XdtXd is None:
+                logdet_P0 = logdet_invVbeta
+                quad0 = 0.0
+            else:
+                # Dummy-augmented prior: N(m0, P0^{-1}) with
+                # P0 = invVbeta + kron(invSig, Xd'Xd), P0 m0 = b0.
+                P0 = invVbeta.toarray() + np.kron(invSig, XdtXd)
+                P0 = 0.5 * (P0 + P0.T)
+                b0 = (XdtYd @ invSig).reshape((dim,), order="F")
+                C0 = np.linalg.cholesky(P0)
+                logdet_P0 = 2.0 * float(np.sum(np.log(np.diag(C0))))
+                z0 = np.linalg.solve(C0, b0)
+                quad0 = float(z0 @ z0)   # b0' P0^{-1} b0 = m0' P0 m0
+            cond_mdd = (
+                -0.5 * n * Tnew * math.log(2.0 * math.pi)
+                + 0.5 * Tnew * logdet_invSig
+                - 0.5 * n * float(np.sum(h))
+                + 0.5 * logdet_P0
+                - 0.5 * logdet_Kbeta
+                - 0.5 * (S_quad + quad0 - float(b_vec @ mu))
+            )
+            cpz_mdd_draws.append(cond_mdd)
 
         # (c) sample invSig (Wishart)
         err = Y_new - X @ beta
@@ -353,8 +481,14 @@ def fit_cpz(self, mufbvar_data, hyp, var_of_interest=None, temp_agg="mean",
     print(f"CPZ sampler finished. SV acceptance rate: "
           f"{accept_count / max(it_total, 1):.3f}", end="\n")
 
+    self.cpz_mdd_draws = np.asarray(cpz_mdd_draws, dtype=float)
     if return_mdd:
-        return np.nan
+        if self.cpz_mdd_draws.size == 0:
+            raise RuntimeError(
+                "return_mdd=True but no retained draws produced a "
+                "conditional-MDD value."
+            )
+        return float(np.mean(self.cpz_mdd_draws))
     return None
 
 
