@@ -289,6 +289,21 @@ def update_hyperparameters_mango_rmse(self, mufbvar_data_in, param_space, H,
 
     tuner = Tuner(param_space, calc_rmse_1, conf_dict)
     results = tuner.minimize()
+
+    # A search in which every evaluation raised still returns a "best"
+    # point -- whichever candidate the optimiser happened to try first --
+    # and, without this check, saves it to disk as though it were a
+    # selection. Job 12506710 did exactly that: all 34 SBF configurations
+    # failed on a missing attribute, the job exited 0, and the resulting
+    # hyperparameter file was an arbitrary draw from the search space.
+    # Refuse to report a selection that was never actually found.
+    if not np.isfinite(results["best_objective"]) or results["best_objective"] >= 1e10:
+        raise RuntimeError(
+            "Hyperparameter search found no usable configuration: the best "
+            f"objective is {results['best_objective']}, the penalty value "
+            "returned when an evaluation raises. Every evaluation failed; "
+            "see the 'RMSE evaluation failed' lines above for the cause. "
+            "No hyperparameters have been saved.")
     best_params = results["best_params"]
 
     values = list(best_params.values())

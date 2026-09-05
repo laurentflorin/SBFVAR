@@ -116,6 +116,12 @@ def _fit_ss(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_
     
     # Data from mufbvar_data
     YMX_list = copy.deepcopy(mufbvar_data.YMX_list)
+    # aggregate() needs the higher-frequency column names to resolve
+    # var_of_interest, so the attribute has to survive the fit. The CPZ path
+    # sets it in _estimation_cpz.py; without this line the SS path raises
+    # AttributeError from aggregate() for any caller that passes
+    # var_of_interest (the OOS-RMSE hyperparameter tuner is one).
+    self.YMX_list = YMX_list
     YM0_list = copy.deepcopy(mufbvar_data.YM0_list)
     select_m_list = copy.deepcopy(mufbvar_data.select_m_list)
     vars_m_list = copy.deepcopy(mufbvar_data.vars_m_list)
