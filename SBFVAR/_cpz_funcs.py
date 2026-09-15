@@ -348,16 +348,39 @@ def build_stacked_data(datasets, ratios_to_highest):
     return Yraw, block_info
 
 
-def build_selection_matrices(Yraw, block_info, datasets, lag):
+def build_selection_matrices(Yraw, block_info, datasets, lag,
+                             select_low=None, agg_identity="mean"):
     """Build ``vecY``, ``M_o``, ``M_u``, ``M_a`` and ``Y_con``.
 
     Faithful, N-frequency generalisation of the selection-matrix construction
     in ``MFVAR.m``.  All lower-frequency variables are treated as latent
-    high-frequency states with intertemporal-aggregation ("flow") constraints
-    handled through ``M_a`` (the Mariano-Murasawa tent weights
-    ``[1:m, m-1:-1:1]/m``).  Highest-frequency entries are observed only when
+    high-frequency states with intertemporal-aggregation constraints handled
+    through ``M_a``.  Highest-frequency entries are observed only when
     finite; missing/ragged highest-frequency entries are sampled as latent
     states in the same unified system.
+
+    ``agg_identity`` chooses the identity that ties the latent high-frequency
+    path to each observed low-frequency value, and it has to agree with what
+    :func:`aggregate` later does to the forecast path or the forecasts come
+    out on the wrong scale:
+
+    * ``"mean"`` (default): the observation equals the simple mean of the
+      ``m`` high-frequency values in its period (weights ``1/m``, column sum
+      1). This is the identity the MBFVAR package's CPZ path uses, so the two
+      models then differ only in their base-frequency structure.
+    * ``"tent"``: the Mariano-Murasawa weights ``[1..m, m-1..1]/m`` (column
+      sum ``m``) over ``2m-1`` periods, the ``MFVAR.m`` convention, under
+      which the latent is a per-period growth rate. It applies only to
+      growth-transformed variables; a level cannot be the tent sum of
+      anything, so levels get the mean identity under either setting.
+
+    Before ``agg_identity`` existed every low-frequency variable got the tent,
+    and :func:`aggregate` took a simple mean of the latent path, so every
+    quarterly forecast was emitted at 1/12 of its value and every monthly
+    level at 1/4 -- the unemployment rate stepped from 5.57 to 1.37 at the
+    first forecast row. ``select_low`` lists, per low-frequency block, the
+    transformation flags (1 = growth, 0 = level) used to tell the two apart;
+    when it is ``None`` every variable is treated as growth-transformed.
 
     Parameters
     ----------
@@ -423,27 +446,54 @@ def build_selection_matrices(Yraw, block_info, datasets, lag):
     # Low-frequency blocks are ordered high-to-low starting after the highest
     # frequency block.  Their offsets *within the latent (n_low) ordering* are
     # the column offsets minus n_high.
+    if agg_identity not in ("mean", "tent"):
+        raise ValueError(f"agg_identity must be 'mean' or 'tent', got "
+                         f"{agg_identity!r}")
     low_blocks = block_info[1:]
     rows_ma = []
     cols_ma = []
     vals_ma = []
     y_con_parts = []
     con_col = 0
-    for blk in low_blocks:
+    for bi, blk in enumerate(low_blocks):
         level = blk["level"]
         m = blk["ratio"]  # highest-frequency periods per low-frequency period
         nk = blk["n_vars"]
+        if select_low is None:
+            is_growth = np.ones(nk, dtype=bool)
+        else:
+            is_growth = np.asarray(select_low[bi]).astype(int).ravel() == 1
+            if is_growth.size != nk:
+                raise ValueError(f"select_low[{bi}] has {is_growth.size} "
+                                 f"entries for a block of {nk} variables")
         off = blk["col_start"] - n_high  # offset in the latent (n_low) ordering
         d = np.asarray(datasets[level], dtype=float)
         n_periods = blk["n_periods"]
-        # tent weights [1..m, m-1..1] / m, length 2m-1
-        w = np.concatenate([np.arange(1, m + 1), np.arange(m - 1, 0, -1)]) / m
-        for i in range(1, min(n_periods, d.shape[0])):
-            # 0-indexed high-frequency start of the tent for observation i
-            start = (i - 1) * m + 1
+        # Two weight vectors per block. The tent, [1..m, m-1..1] / m over
+        # 2m-1 periods, sums to m; the mean, 1/m over the m periods of the
+        # observation's own window, sums to 1. Whichever identity is chosen,
+        # a level variable always gets the mean: the observation IS the
+        # period average of the latent, and a tent would force the latent to
+        # one m-th of it.
+        w_tent = np.concatenate([np.arange(1, m + 1), np.arange(m - 1, 0, -1)]) / m
+        w_mean = np.full(m, 1.0 / m)
+        # The tent needs period i-1, so it cannot constrain observation 0;
+        # the mean identity lives inside period i and can.
+        for i in range(0, min(n_periods, d.shape[0])):
             for a in range(nk):
                 if not np.isfinite(d[i, a]):
                     continue
+                if agg_identity == "tent" and is_growth[a]:
+                    if i == 0:
+                        continue
+                    w = w_tent
+                    # 0-indexed high-frequency start of the tent for
+                    # observation i: it straddles periods i-1 and i
+                    start = (i - 1) * m + 1
+                else:
+                    w = w_mean
+                    # the observation's own window only
+                    start = i * m
                 for wi, wv in enumerate(w):
                     t = start + wi
                     if t < 0 or t >= T:

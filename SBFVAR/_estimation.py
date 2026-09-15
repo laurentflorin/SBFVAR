@@ -1468,6 +1468,21 @@ def aggregate(self, frequency, reset_index = True):
     
     
     freq_ratio, start = agg_helper(freq_lf, freq_hf, YY_full_list[0])
+    # The CPZ fit ties each low-frequency observation to the latent path by
+    # an identity chosen at fit time. The mean below reproduces the "mean"
+    # identity exactly. It does NOT reproduce the Mariano-Murasawa tent,
+    # whose weights sum to the frequency ratio: a mean of a tent-constrained
+    # path is the observation divided by that ratio, which is how every
+    # quarterly SBF-CPZ forecast came out at 1/12 scale for three full runs.
+    # Refuse rather than repeat that silently.
+    if (getattr(self, "method", None) == "chan_poon_zhu"
+            and getattr(self, "cpz_agg_identity", "mean") != "mean"):
+        raise NotImplementedError(
+            "aggregate() implements the 'mean' identity only; the fit used "
+            f"agg_identity={self.cpz_agg_identity!r}, and aggregating its "
+            "path with a mean would emit forecasts at 1/freq_ratio scale. "
+            "Refit with agg_identity='mean' (the default, and the identity "
+            "the MBFVAR CPZ path uses).")
     print("Aggregating for each draw")
     for i in tqdm(range(len(self.valid_draws))):
         temp = YY_full_list[i].iloc[start:,].groupby(YY_full_list[i].iloc[start:,].reset_index().index // freq_ratio).filter(lambda x: len(x) == freq_ratio)

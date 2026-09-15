@@ -115,7 +115,7 @@ def _sample_latent_Y(h, invSig, Sig_chol, betaT, A, M_o, M_u, M_a, Y_con,
 
 def fit_cpz(self, mufbvar_data, hyp, var_of_interest=None, temp_agg="mean",
             check_explosive=True, return_mdd=False, max_it_explosive=1000,
-            **kwargs):
+            agg_identity="mean", **kwargs):
     """Estimate the mixed-frequency VAR using the Chan, Poon & Zhu approach.
 
     Implements the stacked conditionally-Gaussian state-space sampler with a
@@ -180,6 +180,9 @@ def fit_cpz(self, mufbvar_data, hyp, var_of_interest=None, temp_agg="mean",
     self.temp_agg = temp_agg
     self.var_of_interest = var_of_interest
     self.method = "chan_poon_zhu"
+    # Recorded so aggregate() can check it agrees with what it does to the
+    # forecast path; see build_selection_matrices for why that matters.
+    self.cpz_agg_identity = agg_identity
     if temp_agg == "sum":
         raise ValueError(
             "method='chan_poon_zhu' currently supports temp_agg='mean' only; "
@@ -207,7 +210,26 @@ def fit_cpz(self, mufbvar_data, hyp, var_of_interest=None, temp_agg="mean",
 
     # ---- build the stacked system --------------------------------------
     Yraw, block_info = build_stacked_data(datasets, ratios_to_highest)
-    sel = build_selection_matrices(Yraw, block_info, datasets, lag)
+    # Transformation flags per low-frequency block, in block_info's high-to-low
+    # order. datasets is lowest-to-highest, so level 0 is the quarterly block
+    # (select_q) and level L >= 1 is select_m_list[L - 1]; the constraint
+    # builder needs them to give levels a mean identity even when growth
+    # rates get the tent.
+    # A data object without the flags (minimal test doubles) is treated as
+    # all-growth, which under the mean identity changes nothing: mean weights
+    # apply to growth and level alike. Only the tent needs the distinction.
+    select_q = getattr(mufbvar_data, "select_q", None)
+    select_m = getattr(mufbvar_data, "select_m_list", None)
+    select_low = None
+    if select_q is not None and select_m is not None:
+        select_low = []
+        for blk in block_info[1:]:
+            lvl = blk["level"]
+            flags = select_q[0] if lvl == 0 else select_m[lvl - 1]
+            select_low.append(np.asarray(flags).ravel())
+    sel = build_selection_matrices(Yraw, block_info, datasets, lag,
+                                   select_low=select_low,
+                                   agg_identity=agg_identity)
     n = sel["n"]
     T = sel["T"]
     n_high = sel["n_high"]

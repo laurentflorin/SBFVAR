@@ -60,8 +60,13 @@ class TestCPZFixes(unittest.TestCase):
         sel = CPZ_FUNCS.build_selection_matrices(yraw, block_info, [q, m, w], 1)
 
         self.assertFalse(np.isnan(sel["Y_con"]).any())
-        self.assertEqual(sel["M_a"].shape[1], 4)
-        np.testing.assert_array_equal(sel["Y_con"], np.array([11.0, 13.0, 14.0, 15.0]))
+        # Under the default mean identity observation 0 of each block is
+        # constrained too (the tent could not, needing period -1), so the
+        # monthly block yields 10, 11, 13, 14, 15 and the quarterly block 1.0
+        # -- six constraints, the NaN at m[2] and q[1] skipped.
+        self.assertEqual(sel["M_a"].shape[1], 6)
+        np.testing.assert_array_equal(
+            sel["Y_con"], np.array([10.0, 11.0, 13.0, 14.0, 15.0, 1.0]))
 
     def test_get_resid_var_is_nan_safe(self):
         y = np.arange(12.0).reshape(-1, 1)
