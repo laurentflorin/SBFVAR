@@ -563,3 +563,25 @@ def cholcov(SIGMA):
 def is_pos_def(x):
     return np.all(np.linalg.eigvals(x) > 0)  
 """    
+
+
+def finite_draw_mask(*arrays):
+    """Which stored draws are usable: True where every array is finite at
+    that draw index, judged only at positions that are finite for most
+    draws.
+
+    Each array is indexed by draw along axis 0. A position that is
+    non-finite in more than half of the draws is structural (the ragged-edge
+    padding in YYactsim_list, for instance) and is ignored; a draw is flagged
+    only where it alone is non-finite. This is what lets one poisoned draw be
+    dropped without discarding the whole fit, and lets a fit with structural
+    NaN padding pass untouched.
+    """
+    mask = None
+    for arr in arrays:
+        a = np.asarray(arr, dtype=float)
+        fin = np.isfinite(a.reshape(a.shape[0], -1))
+        common = fin.mean(axis=0) > 0.5
+        ok = fin[:, common].all(axis=1)
+        mask = ok if mask is None else (mask & ok)
+    return mask

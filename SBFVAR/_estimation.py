@@ -25,7 +25,7 @@ from sklearn.utils.extmath import randomized_svd
 
 from .cholcov.cholcov_module import cholcovOrEigendecomp
 from .inverse.matrix_inversion import invert_matrix
-from .mfbvar_funcs import calc_yyact, is_explosive, mdd_
+from .mfbvar_funcs import calc_yyact, finite_draw_mask, is_explosive, mdd_
 
 tqdm = partial(tqdm, position=0, leave=True)
 pio.renderers.default = 'browser'
@@ -1019,7 +1019,26 @@ def _fit_ss(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_
         stability_rejected / stability_proposals if stability_proposals > 0
         else float("nan")
     )
-    self.valid_draws = [draw for draw in valid_draws if draw >= self.nburn/self.thining]
+    kept = [draw for draw in valid_draws if draw >= self.nburn/self.thining]
+    # A stored draw with non-finite values would poison the plain means the
+    # output step takes over draws: in the latent-state study a single such
+    # draw among 30 000 made every nowcast-weekly mean NaN, and the cell was
+    # recorded as a degenerate fit after a full-length run (28 cells, ~700
+    # core-hours). Such draws are dropped here and COUNTED, so the fit stays
+    # usable and the loss is visible rather than fatal or silent.
+    finite = finite_draw_mask(YYactsim_list, XXactsim_list, lstate_list,
+                              Phip, Sigmap)
+    self.nonfinite_draws = int(sum(1 for d in kept if not finite[d]))
+    self.nonfinite_draw_share = (self.nonfinite_draws / len(kept)
+                                 if kept else float("nan"))
+    if self.nonfinite_draws:
+        print(f"Dropped {self.nonfinite_draws} of {len(kept)} post-burn-in "
+              f"draws whose output was non-finite.")
+    self.valid_draws = [d for d in kept if finite[d]]
+    if not self.valid_draws:
+        raise RuntimeError(
+            f"sbfvar: every post-burn-in draw ({len(kept)}) produced "
+            f"non-finite output; the fit degenerated")
     self.lstate_list = lstate_list
     # Store state-space model matrices
     self.GAMMAs = GAMMAs
