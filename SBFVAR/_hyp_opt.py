@@ -17,6 +17,18 @@ def _estim(self, mufbvar_data, hyp_list, nsim, var_of_interest, temp_agg,
         # penalty value so the optimiser can continue rather than crashing.
         print("No stable VAR found after maximum restarts, returning penalty value.")
         return -1e16
+    except Exception as exc:  # noqa: BLE001 - guard optimiser against crashes
+        # Any other numerical failure for a bad hyperparameter draw is a
+        # property of that draw, not a reason to abandon the search. The one
+        # that forced this: on the latent study's neutral DGP the sampler can
+        # end with no usable post-burn-in draw at all, which fit() now raises
+        # on; a single such draw used to kill the whole tuning run through
+        # joblib. Scoring it at the penalty lets the optimiser avoid that
+        # region of the space instead. Mirrors MBFVAR/_hyp_opt.py, which
+        # already catches broadly.
+        print(f"MDD evaluation failed ({type(exc).__name__}: {exc}); "
+              f"returning penalty value.")
+        return -1e16
     finally:
         self.nsim = original_nsim
     # NaN-handling: prevent NaN/inf from propagating to Mango's optimiser.
@@ -134,8 +146,21 @@ def update_hyperparameters_mango(self, mufbvar_data, param_space, init_points, n
 
     tuner = Tuner(param_space, calc_mdd_1, conf_dict)
     results = tuner.maximize()
-    best_params = results["best_params"]
 
+    # A search in which every evaluation returned the penalty still reports a
+    # "best" point -- whichever candidate happened to be tried first -- and
+    # would save it as though it were a selection. The RMSE variant below
+    # already refuses that; the MDD path did not, which matters most exactly
+    # where it is most likely to happen (a DGP on which many hyperparameter
+    # draws leave the sampler degenerate).
+    if not np.isfinite(results["best_objective"]) or results["best_objective"] <= -1e16:
+        raise RuntimeError(
+            "Hyperparameter search found no usable configuration: the best "
+            f"objective is {results['best_objective']}, the penalty value "
+            "returned when an evaluation fails. Every evaluation failed; see "
+            "the lines above for the cause. No hyperparameters have been saved.")
+
+    best_params = results["best_params"]
     values = list(best_params.values())
     hyp = [values[0], values[1], 1, values[2], values[3]]
 
