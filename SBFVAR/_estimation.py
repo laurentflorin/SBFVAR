@@ -25,7 +25,7 @@ from sklearn.utils.extmath import randomized_svd
 
 from .cholcov.cholcov_module import cholcovOrEigendecomp
 from .inverse.matrix_inversion import invert_matrix
-from .mfbvar_funcs import calc_yyact, finite_draw_mask, is_explosive, mdd_
+from .mfbvar_funcs import calc_yyact, finite_draw_mask, is_explosive, mdd_, resolve_prior_mean
 from ._ss_state import forecast_measurement, insample_transition, latent_position_maps
 
 tqdm = partial(tqdm, position=0, leave=True)
@@ -34,7 +34,8 @@ pio.renderers.default = 'browser'
 
 
 def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_explosive=1000,
-        check_explosive=True, return_mdd=False, method='schorfheide_song', seed=None):
+        check_explosive=True, return_mdd=False, method='schorfheide_song', seed=None,
+        prior_mean=None):
     """
     Dispatch to the requested mixed-frequency estimator.
 
@@ -46,6 +47,14 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_e
         ``'chan_poon_zhu'`` uses the Chan, Poon & Zhu (2024) stacked
         conditionally-Gaussian estimator with common stochastic volatility
         (see :mod:`SBFVAR._estimation_cpz`).
+
+    prior_mean : None, dict or sequence
+        Schorfheide-Song only: prior mean of each variable's own first lag.
+        ``None`` (default) centres every variable on a random walk, the
+        original prior. A dict maps variable names to their prior mean
+        (unnamed variables keep 1); for period-on-period growth rates use 0
+        for the growth series and 1 for persistent ones such as interest
+        rates. The sum-of-coefficients dummies are scaled by the same values.
 
     All other parameters are forwarded to the selected estimator; see
     :func:`_fit_ss` for their meaning.
@@ -61,6 +70,9 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_e
     self.seed = seed
     np.random.seed(seed)
     if method == "chan_poon_zhu":
+        if prior_mean is not None:
+            raise ValueError("prior_mean applies to the Schorfheide-Song prior; "
+                             "the Chan-Poon-Zhu prior is already centred at zero")
         return self.fit_cpz(
             mufbvar_data, hyp, var_of_interest=var_of_interest,
             temp_agg=temp_agg, check_explosive=check_explosive,
@@ -69,11 +81,11 @@ def fit(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_e
     return self._fit_ss(
         mufbvar_data, hyp, var_of_interest=var_of_interest, temp_agg=temp_agg,
         max_it_explosive=max_it_explosive, check_explosive=check_explosive,
-        return_mdd=return_mdd,
+        return_mdd=return_mdd, prior_mean=prior_mean,
     )
 
 
-def _fit_ss(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_explosive = 1000, check_explosive = True, return_mdd=False):
+def _fit_ss(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_it_explosive = 1000, check_explosive = True, return_mdd=False, prior_mean=None):
     """
     Fit the mixed-frequency BVAR model using MUFBVAR's approach with
     built-in aggregation relationships in the measurement equation.
@@ -154,6 +166,9 @@ def _fit_ss(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_
     self.select = mufbvar_data.select_list[-1]
     self.select_w = mufbvar_data.select_m_list[-1]
     self.select_m_q = mufbvar_data.select_q[-1]
+    # Own-first-lag prior means in the model's variable order ([w, m, q],
+    # the order of YY); None keeps the random-walk prior exactly as before.
+    self.prior_mean = resolve_prior_mean(prior_mean, self.varlist)
 
     
     nburn = round((self.nburn_perc)*math.ceil(self.nsim/self.thining))
@@ -722,9 +737,9 @@ def _fit_ss(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_
             
             # Calculate dummy observations for the VAR
             if return_mdd:
-                mdd_value, YYact, YYdum, XXact, XXdum = mdd_(self.hyp, YY, spec)
+                mdd_value, YYact, YYdum, XXact, XXdum = mdd_(self.hyp, YY, spec, prior_mean=self.prior_mean)
             else:
-                YYact, YYdum, XXact, XXdum = calc_yyact(self.hyp, YY, spec)
+                YYact, YYdum, XXact, XXdum = calc_yyact(self.hyp, YY, spec, prior_mean=self.prior_mean)
         
             # Store simulation results
             if (j % self.thining == 0):
