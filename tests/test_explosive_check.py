@@ -12,9 +12,11 @@ import unittest
 import numpy as np
 import pandas as pd
 
-import SBFVAR
-import SBFVAR._estimation as estimation
-from SBFVAR.mfbvar_funcs import _is_explosive_eig, is_explosive
+from _real_package import real_sbfvar
+
+SBFVAR = real_sbfvar()
+import SBFVAR._estimation as estimation  # noqa: E402
+from SBFVAR.mfbvar_funcs import _is_explosive_eig, is_explosive  # noqa: E402
 
 
 @contextlib.contextmanager

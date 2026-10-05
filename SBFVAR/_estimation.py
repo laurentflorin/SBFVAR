@@ -26,6 +26,7 @@ from sklearn.utils.extmath import randomized_svd
 from .cholcov.cholcov_module import cholcovOrEigendecomp
 from .inverse.matrix_inversion import invert_matrix
 from .mfbvar_funcs import calc_yyact, finite_draw_mask, is_explosive, mdd_
+from ._ss_state import forecast_measurement, insample_transition, latent_position_maps
 
 tqdm = partial(tqdm, position=0, leave=True)
 pio.renderers.default = 'browser'
@@ -533,67 +534,30 @@ def _fit_ss(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_
             Tnew = Tstar - nobs  # Number of periods to forecast
             Tnobs = nobs + Tnew  # Total periods (observed + forecast)
                         
-            # Measurement Equation
-                        
-            # Weekly measurement (direct observation)
-            Z0 = np.zeros((Nw, kn))
-            Z0[:, :Nw] = np.eye(Nw)  # Current weekly values observed directly
+            # Measurement Equation: weekly observed directly, monthly and
+            # quarterly as the mean (sum) of their latent weekly values over
+            # the last rmw (rqw) weeks. Before 0.2.2 the monthly rows pointed
+            # at the weekly slots of the state (no +Nw offset), so every
+            # observed month of the ragged edge was imposed, exactly, on the
+            # wrong series (_ss_state.forecast_measurement).
+            ZZ = forecast_measurement(Nw, Nm, Nq, p, rmw, rqw, self.temp_agg)
 
-            # Monthly measurement (temporal aggregation from weekly)
-            Z1 = np.zeros((Nm, kn))
-            # Monthly is aggregate of 4 weeks
-            for bb in range(Nm):
-                for ll in range(rmw):  # Weekly to monthly ratio (typically 4)
-                    if self.temp_agg == "mean":
-                        Z1[bb, ll*Ntotal + bb] = 1/rmw
-                    if self.temp_agg == "sum":
-                        Z1[bb, ll*Ntotal + bb] = 1
-                        
-            # Quarterly measurement (temporal aggregation from weekly)
-            Z2 = np.zeros((Nq, kn))
-            # Quarterly is aggregate of 12 weeks
-            for bb in range(Nq):
-                for ll in range(rqw):  # Weekly to quarterly ratio (typically 12)
-                    if self.temp_agg == "mean":
-                        Z2[bb, ll*Ntotal + Nw+Nm+bb] = 1/rqw
-                    if self.temp_agg == "sum":
-                        Z2[bb, ll*Ntotal + Nw+Nm+bb] = 1
-                        
-            # Combine all measurement equations
-            ZZ = np.vstack((Z0, Z1, Z2))
-                        
-            # Construct full state vector from filtered state and observations
-
-            # We have weekly data for direct variables
-            BAt = np.concatenate((
-                YW[T0+nobs-1, :],                     # Current weekly obs
-                a_filtered[nobs-1, :Nm],              # Current monthly state
-                a_filtered[nobs-1, Nm_states:Nm_states+Nq]  # Current quarterly state
-            ))
-            
-            # Add lagged values
-            for rr in range(1, p+1):
-                if T0+nobs-1-rr >= 0:  # Check if we have enough weekly data
-                    BAt = np.concatenate((BAt, np.concatenate((
-                        YW[T0+nobs-1-rr, :],  # Lagged weekly obs
-                        a_filtered[nobs-1, rr*Nm:(rr+1)*Nm],  # Lagged monthly state
-                        a_filtered[nobs-1, Nm_states+rr*Nq:Nm_states+(rr+1)*Nq]  # Lagged quarterly state
-                    ))))
-                else:
-                    BAt = np.concatenate((BAt, np.concatenate((
-                        np.zeros(Nw),  # Padding for missing weekly
-                        a_filtered[nobs-1, rr*Nm:(rr+1)*Nm],  # Lagged monthly state
-                        a_filtered[nobs-1, Nm_states+rr*Nq:Nm_states+(rr+1)*Nq]  # Lagged quarterly state
-                    ))))
-        
-            # Initialize covariance matrix BPt
-            BPt = np.zeros((kn, kn))
-
-            # Weekly variables use small initial values
+            # Hand-over from the in-sample (frequency-blocked) state to the
+            # ragged-edge (lag-interleaved) one: weekly observations in the
+            # weekly slots, every latent (variable, lag) element moved to its
+            # counterpart, for the mean AND the covariance. Before 0.2.2 the
+            # covariance was copied block by block as if both layouts were
+            # interleaved, mixing monthly and quarterly lags.
+            latent_ins, latent_fc = latent_position_maps(Nw, Nm, Nq, p)
+            BAt = np.zeros(kn)
             for rr in range(p+1):
-                for vv in range(p+1):
-                        BPt[(rr+1)*Nw+rr*Nstate:(rr+1)*(Nw+Nstate), (vv+1)*Nw+vv*Nstate:(vv+1)*(Nw+Nstate)] = np.squeeze(
-                            Ptilde[rr*Nstate:(rr+1)*Nstate,vv*Nstate:(vv+1)*Nstate])
+                if T0+nobs-1-rr >= 0:  # weekly lags before the sample stay zero
+                    BAt[rr*Ntotal:rr*Ntotal+Nw] = YW[T0+nobs-1-rr, :]
+            BAt[latent_fc] = a_filtered[nobs-1, latent_ins]
+
+            # The weekly slots are observed, so they carry no variance.
+            BPt = np.zeros((kn, kn))
+            BPt[np.ix_(latent_fc, latent_fc)] = Ptilde[np.ix_(latent_ins, latent_ins)]
             
             # Initialize storage for state and covariance
             BAt_mat = np.zeros((Tnobs, kn))
@@ -697,23 +661,30 @@ def _fit_ss(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_
             # Kalman Smoother
             #####################
             
+            # Hand-back: the smoothed draw at the last in-sample week, moved
+            # element by element into the frequency-blocked layout. Before
+            # 0.2.2 it was copied in interleaved blocks, which put e.g. the
+            # monthly variables' lag-8 values into the current quarterly slots.
             At_draw = np.zeros((nobs, Nstate * (p+1)))
-            for kk in range(p+1):
-                At_draw[nobs-1, kk * Nstate:(kk+1)*+Nstate] = AT_draw[0,(kk+1)*Nw + kk*Nstate:(kk+1)*(Nw+Nstate)]
-                
-            
+            At_draw[nobs-1, latent_ins] = AT_draw[0, latent_fc]
+
+
             for i in range(nobs-1):
-                Att = a_filtered[nobs-(i+2),:]#[:, np.newaxis]
-                Ptt = P_filtered2[nobs-(i+2),:].reshape(Nstate*(p+1), Nstate*(p+1), order = "F")
-                
-                
+                s = nobs-(i+2)  # smoothing week s given the draw at week s+1
+                Att = a_filtered[s,:]
+                Ptt = P_filtered2[s,:].reshape(Nstate*(p+1), Nstate*(p+1), order = "F")
+
+
                 Phat = GAMMAs @ Ptt @ GAMMAs.T  + GAMMAu[:, :Nm] @ sigma_mm @ GAMMAu[:, :Nm].T + GAMMAu[:, Nm:Nm+Nq] @ sigma_qq @ GAMMAu[:, Nm:Nm+Nq].T
-                
+
                 Phat = 0.5*(Phat + Phat.T)
-                
+
                 inv_Phat = invert_matrix(Phat)
-                
-                nut = At_draw[nobs-(i+1), :] - GAMMAs @ Att - GAMMAz @ Z_t[nobs-1-(i+1)] - GAMMAc[:,0]
+
+                # The transition into week s+1 uses that week's weekly
+                # regressors, Z_t[s+1], as in the filter's prediction step.
+                # Before 0.2.2 the smoother used Z_t[s], one week early.
+                nut = At_draw[s+1, :] - GAMMAs @ Att - GAMMAz @ Z_t[s+1] - GAMMAc[:,0]
 
                 
                 temp = Ptt @ GAMMAs.T
@@ -721,7 +692,7 @@ def _fit_ss(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_
                 Pmean = Ptt - temp @ inv_Phat @ np.transpose(temp)
                 
                 Pmchol = cholcovOrEigendecomp(Pmean)
-                At_draw[nobs-1-(i+1), :] = np.transpose(Amean + Pmchol @ np.random.standard_normal(Nstate*(p+1)))
+                At_draw[s, :] = np.transpose(Amean + Pmchol @ np.random.standard_normal(Nstate*(p+1)))
                     
             # Minesota Prior                            
             ########################
@@ -853,57 +824,6 @@ def _fit_ss(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_
             
             # Update state space matrices with new VAR parameters
             # ----------------------------------------------
-            #Weekly equation coefficients (split by variable type)
-            phi_ww = np.zeros((Nw*p, Nw))
-            phi_wm = np.zeros((Nm*p, Nw))
-            phi_wq = np.zeros((Nq*p, Nw))
-            for i in range(p):
-                # Weekly variables affecting weekly variables
-                phi_ww[Nw*i:Nw*(i+1), :] = Phi[i*Ntotal:i*Ntotal+Nw, :Nw]
-
-                # Monthly variables affecting weekly variables
-                phi_wm[Nm*i:Nm*(i+1), :] = Phi[i*Ntotal+Nw:i*Ntotal+Nw+Nm, :Nw]
-
-                # Quarterly variables affecting weekly variables
-                phi_wq[Nq*i:Nq*(i+1), :] = Phi[i*Ntotal+Nw+Nm:i*Ntotal+Ntotal, :Nw]
-
-            # Weekly constant term
-            phi_wc = Phi[-1, :Nw, np.newaxis]
-
-            # Monthly equation coefficients (split by variable type)
-            phi_mw = np.zeros((Nw*p, Nm))
-            phi_mm = np.zeros((Nm*p, Nm))
-            phi_mq = np.zeros((Nq*p, Nm))
-            for i in range(p):
-                # Weekly variables affecting monthly variables
-                phi_mw[Nw*i:Nw*(i+1), :] = Phi[i*Ntotal:i*Ntotal+Nw, Nw:Nw+Nm]
-                
-                # Monthly variables affecting monthly variables
-                phi_mm[Nm*i:Nm*(i+1), :] = Phi[i*Ntotal+Nw:i*Ntotal+Nw+Nm, Nw:Nw+Nm]
-                
-                # Quarterly variables affecting monthly variables
-                phi_mq[Nq*i:Nq*(i+1), :] = Phi[i*Ntotal+Nw+Nm:i*Ntotal+Ntotal, Nw:Nw+Nm]
-
-            # Monthly constant term
-            phi_mc = Phi[-1, Nw:Nw+Nm, np.newaxis]
-
-            # Quarterly equation coefficients (split by variable type)
-            phi_qw = np.zeros((Nw*p, Nq))
-            phi_qm = np.zeros((Nm*p, Nq))
-            phi_qq = np.zeros((Nq*p, Nq))
-            for i in range(p):
-                # Weekly variables affecting quarterly variables
-                phi_qw[Nw*i:Nw*(i+1), :] = Phi[i*Ntotal:i*Ntotal+Nw, Nw+Nm:Ntotal]
-                
-                # Monthly variables affecting quarterly variables
-                phi_qm[Nm*i:Nm*(i+1), :] = Phi[i*Ntotal+Nw:i*Ntotal+Nw+Nm, Nw+Nm:Ntotal]
-                
-                # Quarterly variables affecting quarterly variables
-                phi_qq[Nq*i:Nq*(i+1), :] = Phi[i*Ntotal+Nw+Nm:i*Ntotal+Ntotal, Nw+Nm:Ntotal]
-
-            # Quarterly constant term
-            phi_qc = Phi[-1, Nw+Nm:Ntotal, np.newaxis]
-            
             # Extract covariance matrix blocks
             # ------------------------------
             # Weekly variances
@@ -929,65 +849,16 @@ def _fit_ss(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_
             sigma_mq = 0.5 * (sigma[Nw:Nw+Nm, Nw+Nm:] + sigma[Nw+Nm:, Nw:Nw+Nm].T)
             sigma_qm = sigma_mq.T  # Transpose for symmetry
             
-            # Update transition matrices
-            # -------------------------
-            
-            # Monthly state transition
-
-
-            
-            GAMMAz_m = np.vstack((
-                np.transpose(phi_mw), 
-                np.zeros((p*Nm, p*Nw))
-            ))
-            GAMMAc_m = np.vstack((
-                phi_mc, 
-                np.zeros((p*Nm, 1))
-            ))
-
-            GAMMAz_q = np.vstack((
-                np.transpose(phi_qw), 
-                np.zeros((p*Nq, p*Nw))
-            ))
-            GAMMAc_q = np.vstack((
-                phi_qc, 
-                np.zeros((p*Nq, 1))
-            ))
-            
-            GAMMAz = np.vstack((GAMMAz_m, GAMMAz_q))
-            GAMMAc = np.vstack((GAMMAc_m, GAMMAc_q))
-
-            # Combined state transition matrix for all variables
-            GAMMAs_m = np.vstack((
-                np.hstack((np.transpose(phi_mm), np.zeros((Nm, Nm)))), 
-                np.hstack((np.eye(p*Nm), np.zeros((p*Nm, Nm))))
-            ))
-            # Quarterly state transition
-            GAMMAs_q = np.vstack((
-                np.hstack((np.transpose(phi_qq), np.zeros((Nq, Nq)))), 
-                np.hstack((np.eye(p*Nq), np.zeros((p*Nq, Nq))))
-            ))
-            GAMMAs = np.zeros((state_size, state_size))
-        
-            # Monthly block
-            GAMMAs[:Nm_states, :Nm_states] = GAMMAs_m
-
-            # Quarterly block
-            GAMMAs[Nm_states:, Nm_states:] = GAMMAs_q
-
-            # Cross-influence between monthly and quarterly states
-            # Monthly variables affecting quarterly variables
-            GAMMAs[Nm_states:Nm_states+Nq, :Nm] = np.transpose(phi_qm[:Nm, :])
-
-            # Quarterly variables affecting monthly variables
-            GAMMAs[:Nm, Nm_states:Nm_states+Nq] = np.transpose(phi_mq[:Nq, :])
-            
-            # 5. Update measurement equation matrices if needed
-            # For the unified approach, LAMBDAs matrices might need updating if they depend on VAR coefficients
-            # If your temporal aggregation constraints are static, you don't need to update them
-            LAMBDAs_w = np.hstack((np.zeros((Nw,Nm)), np.transpose(phi_wm), np.zeros((Nw,Nq)) ,np.transpose(phi_wq)))
-            LAMBDAz_w = np.transpose(phi_ww)
-            LAMBDAc_w = phi_wc
+            # Transition and weekly observation equation implied by the VAR
+            # draw, with every lag of the monthly<->quarterly cross-effects.
+            # Before 0.2.2 only lag 1 of those was carried, so the latent
+            # states were filtered under a truncated version of the VAR
+            # being estimated (_ss_state.insample_transition).
+            ss_mats = insample_transition(Phi, Nw, Nm, Nq, p)
+            GAMMAs, GAMMAz, GAMMAc = ss_mats["GAMMAs"], ss_mats["GAMMAz"], ss_mats["GAMMAc"]
+            LAMBDAs_w = ss_mats["LAMBDAs_w"]
+            LAMBDAz_w = ss_mats["LAMBDAz_w"]
+            LAMBDAc_w = ss_mats["LAMBDAc_w"]
         
         if restart_j0:
             tries_at_j0 += 1 
