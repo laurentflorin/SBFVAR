@@ -25,7 +25,8 @@ from sklearn.utils.extmath import randomized_svd
 
 from .cholcov.cholcov_module import cholcovOrEigendecomp
 from .inverse.matrix_inversion import invert_matrix
-from .mfbvar_funcs import calc_yyact, finite_draw_mask, is_explosive, mdd_, resolve_prior_mean
+from .mfbvar_funcs import (calc_yyact, finite_draw_mask, is_explosive, mdd_,
+                          resolve_prior_mean, smoother_pinv)
 from ._ss_state import forecast_measurement, insample_transition, latent_position_maps
 
 tqdm = partial(tqdm, position=0, leave=True)
@@ -658,7 +659,7 @@ def _fit_ss(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_
                 BPhat = 0.5 * (BPhat + BPhat.T)
                 
                 # Inverse of prediction covariance
-                inv_BPhat = invert_matrix(BPhat)
+                inv_BPhat = smoother_pinv(BPhat)
                 
                 # Innovation (difference between sampled state and prediction)
                 Bnut = AT_draw[-(i+1), :] - PHIF @ BAtt - CONF
@@ -694,7 +695,7 @@ def _fit_ss(self, mufbvar_data, hyp, var_of_interest=None, temp_agg='mean', max_
 
                 Phat = 0.5*(Phat + Phat.T)
 
-                inv_Phat = invert_matrix(Phat)
+                inv_Phat = smoother_pinv(Phat)
 
                 # The transition into week s+1 uses that week's weekly
                 # regressors, Z_t[s+1], as in the filter's prediction step.
