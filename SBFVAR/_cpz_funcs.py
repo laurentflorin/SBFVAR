@@ -321,9 +321,26 @@ def build_stacked_data(datasets, ratios_to_highest):
     n_vars = [d.shape[1] for d in datasets]
     n = int(sum(n_vars))
 
-    # Number of complete highest-frequency periods consistent across all
-    # frequencies (truncate ragged edges, mirroring the SS kron/truncate logic).
-    T = min(datasets[k].shape[0] * ratios_to_highest[k] for k in range(L))
+    # The system runs to the last highest-frequency period, so the ragged
+    # edge -- weeks and months observed after the last released value of a
+    # lower frequency -- is part of the sample: its observed high-frequency
+    # entries are data, everything else there is latent, and only released
+    # lower-frequency values get aggregation constraints
+    # (build_selection_matrices skips the rest). Before SBFVAR 0.2.5 T was
+    # the length covered by complete periods of EVERY frequency, which cut
+    # the system at the end of the last released quarter: the CPZ SBF-VAR
+    # never saw the weekly and monthly data of the current quarter, while
+    # the SS sampler (through its ragged-edge filter) and the MBF-VAR's CPZ
+    # path both use them.
+    T = int(datasets[L - 1].shape[0])
+    for k in range(L - 1):
+        if datasets[k].shape[0] * ratios_to_highest[k] > T:
+            raise ValueError(
+                f"the frequency-{k} data cover {datasets[k].shape[0]} periods "
+                f"({datasets[k].shape[0] * ratios_to_highest[k]} highest-"
+                f"frequency periods), more than the {T} highest-frequency "
+                f"periods observed; trim the lower-frequency data or extend "
+                f"the highest-frequency data")
 
     Yraw = np.full((T, n), np.nan)
     block_info = []
