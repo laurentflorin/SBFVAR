@@ -29,7 +29,8 @@ MATLAB routine               Python port
 
 import numpy as np
 import scipy.sparse as sp
-from scipy.linalg import cholesky, solve_triangular
+from scipy.linalg import cholesky, cholesky_banded, solve_triangular
+from scipy.linalg.lapack import dtbtrs
 
 
 # Periods-per-year used to derive integer conversion ratios between adjacent
@@ -199,8 +200,127 @@ def construct_minnesota(sig2, n, lag, theta):
     return sp.diags(diag_vals, format="csc")
 
 
+def _tridiag_quad(d, e, x):
+    """x' A x for the symmetric tridiagonal A with diagonal d and off-diagonal e."""
+    return d @ (x * x) + 2.0 * (e @ (x[:-1] * x[1:]))
+
+
 def sample_CSV(s2, rho, sigh2, h, n, is_forced_accept=False):
     """Common stochastic-volatility sampler (accept/reject + MH).
+
+    Port of ``sample_CSV.m``: Newton iterations to the conditional mode of
+    the log-volatility path ``h``, an accept/reject step with the Gaussian
+    approximation at the mode as proposal, then an MH step.
+
+    Every matrix in it is tridiagonal: the prior precision ``HiSH`` of the
+    AR(1) path, and ``Kh`` = HiSH + diag(Gh). Up to SBFVAR 0.2.5 the step
+    worked on their dense T x T copies (`_sample_CSV_dense`): an O(T^3)
+    Cholesky factor per draw, and O(T^2) work per accept/reject try. On the
+    weekly CPZ system (T ~ 2,700) tries run into the hundreds per draw,
+    and their number rises along the chain (52 per draw over the first 50
+    draws at the 2021-06-25 origin, 205 over draws 200-300). So the
+    2020-2025 origins took 20-90 hours each. Since 0.2.6 the factor and
+    every solve and quadratic form are banded, O(T). The algorithm, the
+    random numbers it draws, and their order are unchanged. Results agree
+    with the dense version to rounding error
+    (tests/test_cpz_csv_banded.py).
+
+    Parameters
+    ----------
+    s2 : ndarray, shape (T,)
+        Sum over variables of squared whitened residuals per period.
+    rho : float
+        AR(1) persistence of the log-volatility.
+    sigh2 : float
+        Innovation variance of the log-volatility.
+    h : ndarray, shape (T,)
+        Current log-volatility path.
+    n : int
+        Number of variables (cross-sectional dimension).
+    is_forced_accept : bool
+        Force acceptance of the proposal.
+
+    Returns
+    -------
+    h : ndarray, shape (T,)
+    is_accept : int
+    """
+    s2 = np.asarray(s2, dtype=float).ravel()
+    h = np.asarray(h, dtype=float).ravel().copy()
+    T = s2.shape[0]
+    is_accept = 0
+
+    # Hrho = I - rho * subdiagonal
+    Hrho = sp.eye(T, format="csc") - rho * sp.diags(
+        np.ones(T - 1), -1, shape=(T, T), format="csc"
+    )
+    dvec = np.concatenate([[(1 - rho ** 2) / sigh2], np.ones(T - 1) / sigh2])
+    HiSH = (Hrho.T @ sp.diags(dvec) @ Hrho).tocsc()
+
+    # Newton iterations to locate the conditional mode.
+    errh = 1.0
+    ht = h.copy()
+    Kh = None
+    while errh > 1e-3:
+        eht = np.exp(ht)
+        sieht = s2 / eht
+        fh = -n / 2.0 + 0.5 * sieht
+        Gh = 0.5 * sieht
+        Kh = (HiSH + sp.diags(Gh)).tocsc()
+        newht = sp.linalg.spsolve(Kh, fh + Gh * ht)
+        errh = np.max(np.abs(newht - ht))
+        ht = newht
+
+    # Tridiagonal parts (Kh symmetrised as the dense version did).
+    kd = Kh.diagonal(0)
+    ke = 0.5 * (Kh.diagonal(1) + Kh.diagonal(-1))
+    hd = HiSH.diagonal(0)
+    he = HiSH.diagonal(1)
+    # Upper banded Cholesky factor U, Kh = U'U; U is the transpose of the
+    # dense version's lower factor, so U x = z is its CKh' x = z.
+    ab = np.zeros((2, T))
+    ab[0, 1:] = ke
+    ab[1, :] = kd
+    U = cholesky_banded(ab, lower=False)
+
+    def _logpost(x):
+        return (-0.5 * _tridiag_quad(hd, he, x) - n / 2.0 * np.sum(x)
+                - 0.5 * np.exp(-x) @ s2)
+
+    # AR (accept/reject) step.
+    hstar = ht.copy()
+    logc = _logpost(hstar) + np.log(3.0)
+    flag = 0
+    hc = ht.copy()
+    while flag == 0:
+        # hc = ht + U \ z, the dense version's CKh' \ z
+        z = np.random.standard_normal(T)
+        x, info = dtbtrs(U, z, uplo="U")
+        if info != 0:
+            raise np.linalg.LinAlgError(f"sample_CSV: banded solve failed (info={info})")
+        hc = ht + x
+        alpARc = _logpost(hc) + 0.5 * _tridiag_quad(kd, ke, hc - ht) - logc
+        if alpARc > np.log(np.random.rand()):
+            flag = 1
+
+    # MH step.
+    alpAR = _logpost(h) + 0.5 * _tridiag_quad(kd, ke, h - ht) - logc
+    if alpAR < 0:
+        alpMH = 1.0
+    elif alpARc < 0:
+        alpMH = -alpAR
+    else:
+        alpMH = alpARc - alpAR
+    if alpMH > np.log(np.random.rand()) or is_forced_accept:
+        h = hc
+        is_accept = 1
+
+    return h, is_accept
+
+
+def _sample_CSV_dense(s2, rho, sigh2, h, n, is_forced_accept=False):
+    """The dense implementation of :func:`sample_CSV` used up to SBFVAR 0.2.5,
+    kept as the reference its banded replacement is tested against.
 
     Faithful port of ``sample_CSV.m``.  Samples the log-volatility path ``h``
     of a single common stochastic-volatility process given the sum of squared
