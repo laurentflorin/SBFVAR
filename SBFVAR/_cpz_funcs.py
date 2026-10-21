@@ -32,6 +32,11 @@ import scipy.sparse as sp
 from scipy.linalg import cholesky, cholesky_banded, solve_triangular
 from scipy.linalg.lapack import dtbtrs
 
+# The CPZ fit runs the exact accept-reject Metropolis-Hastings volatility step
+# (forced acceptance only on its first iteration) since SBFVAR 0.2.7; entry
+# points check for this flag.
+CSV_EXACT = True
+
 
 # Periods-per-year used to derive integer conversion ratios between adjacent
 # frequencies.  These match the conventions already used by the Schorfheide-Song

@@ -438,7 +438,13 @@ def fit_cpz(self, mufbvar_data, hyp, var_of_interest=None, temp_agg="mean",
         except np.linalg.LinAlgError:
             chol_invSig = np.linalg.cholesky(invSig + 1e-10 * np.eye(n)).T
         s2 = np.sum((err @ chol_invSig) ** 2, axis=1)
-        h, is_accept = sample_CSV(s2, rho, sigh2, h, n, is_forced_accept=True)
+        # Exact accept-reject Metropolis-Hastings step (Chan 2020, Online
+        # Appendix A). Acceptance is forced only on the first iteration, where
+        # h starts at zero. Up to SBFVAR 0.2.6 it was forced on every
+        # iteration, as in the replication driver MFVAR.m, which skips the MH
+        # correction: on the paper's data about a third of those draws would
+        # almost surely have been rejected.
+        h, is_accept = sample_CSV(s2, rho, sigh2, h, n, is_forced_accept=(it == 0))
         accept_count += is_accept
         eh = h[1:] - rho * h[:-1]
         sigh2 = 1.0 / np.random.gamma(
@@ -500,8 +506,9 @@ def fit_cpz(self, mufbvar_data, hyp, var_of_interest=None, temp_agg="mean",
     self.input_index_M_W = mufbvar_data.input_data
     self.input_index_Q = mufbvar_data.input_data_Q
 
+    self.csv_accept_rate = accept_count / max(it_total, 1)
     print(f"CPZ sampler finished. SV acceptance rate: "
-          f"{accept_count / max(it_total, 1):.3f}", end="\n")
+          f"{self.csv_accept_rate:.3f}", end="\n")
 
     self.cpz_mdd_draws = np.asarray(cpz_mdd_draws, dtype=float)
     if return_mdd:
