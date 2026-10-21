@@ -28,6 +28,7 @@ from scipy.sparse.linalg import splu
 from scipy.stats import wishart
 from tqdm import tqdm
 
+from . import _cpz_funcs
 from ._cpz_funcs import (
     build_frequency_ratios,
     build_stacked_data,
@@ -438,13 +439,11 @@ def fit_cpz(self, mufbvar_data, hyp, var_of_interest=None, temp_agg="mean",
         except np.linalg.LinAlgError:
             chol_invSig = np.linalg.cholesky(invSig + 1e-10 * np.eye(n)).T
         s2 = np.sum((err @ chol_invSig) ** 2, axis=1)
-        # Exact accept-reject Metropolis-Hastings step (Chan 2020, Online
-        # Appendix A). Acceptance is forced only on the first iteration, where
-        # h starts at zero. Up to SBFVAR 0.2.6 it was forced on every
-        # iteration, as in the replication driver MFVAR.m, which skips the MH
-        # correction: on the paper's data about a third of those draws would
-        # almost surely have been rejected.
-        h, is_accept = sample_CSV(s2, rho, sigh2, h, n, is_forced_accept=(it == 0))
+        # Forced acceptance on every iteration, as in the replication driver
+        # MFVAR.m, unless _cpz_funcs.CSV_EXACT asks for the exact step (see
+        # there: on the weekly system the exact step does not move).
+        h, is_accept = sample_CSV(s2, rho, sigh2, h, n,
+                                  is_forced_accept=(it == 0 or not _cpz_funcs.CSV_EXACT))
         accept_count += is_accept
         eh = h[1:] - rho * h[:-1]
         sigh2 = 1.0 / np.random.gamma(
